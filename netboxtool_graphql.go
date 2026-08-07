@@ -53,6 +53,14 @@ var deviceListGraphQLbody = `
             id
             name
             description
+            type
+            vrf {
+                id
+                name
+            }
+            cable {
+                id
+            }
             tags {
                 id
                 name
@@ -61,6 +69,11 @@ var deviceListGraphQLbody = `
             ip_addresses {
                 id
                 address
+                role
+                vrf {
+                    id
+                    name
+                }
             }
         }
     }
@@ -97,6 +110,19 @@ var deviceTypeGraphQLbody = `
 
 // manufacturerListGraphQLbody fetches manufacturers, filterable by name or
 // id (see GetManufacturer).
+// tenantListGraphQLbody fetches tenants, filterable by name or id (see
+// GetTenants).
+var tenantListGraphQLbody = `
+{
+    tenant_list{{.filter}} {
+        id
+        name
+        slug
+        custom_fields
+    }
+}
+`
+
 var manufacturerListGraphQLbody = `
 {
     manufacturer_list{{.filter}} {

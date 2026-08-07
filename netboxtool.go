@@ -13,6 +13,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"text/template"
@@ -50,8 +51,17 @@ type Response struct {
 	Data    any    `json:"data"`
 }
 type NetboxAddress struct {
-	ID      uint `json:"id,string"`
-	Address string
+	ID      uint          `json:"id,string"`
+	Address string        `json:"address"`
+	Role    string        `json:"role"`
+	VRF     *NetboxVRFRef `json:"vrf"`
+}
+
+// NetboxVRFRef is the minimal VRF reference nested under an interface or ip
+// address in GraphQL responses.
+type NetboxVRFRef struct {
+	ID   uint   `json:"id,string"`
+	Name string `json:"name"`
 }
 type NetboxDeviceManufacturer struct {
 	ID   uint `json:"id,string"`
@@ -136,9 +146,14 @@ type JSONVMs struct {
 // - device_list          (dcim.Interface)
 // - virtual_machine_list (virtualization.VMInterface)
 type JSONInterface struct {
-	ID           uint            `json:"id,string"`
-	Name         string          `json:"name"`
-	Description  string          `json:"description"`
+	ID          uint          `json:"id,string"`
+	Name        string        `json:"name"`
+	Description string        `json:"description"`
+	Type        string        `json:"type"`
+	VRF         *NetboxVRFRef `json:"vrf"`
+	Cable       *struct {
+		ID uint `json:"id,string"`
+	} `json:"cable"`
 	Tags         []NetboxTag     `json:"tags"`
 	IPAddresses  []NetboxAddress `json:"ip_addresses"`
 	CustomFields struct {
@@ -243,20 +258,33 @@ func (nb *NetboxClient) parseDevices(devices []JSONDevice, vm bool) ([]*NBDevice
 		for _, jintf := range device.Interfaces {
 			var addresses []NBAddress
 			for _, addr := range jintf.IPAddresses {
-				addresses = append(addresses, NBAddress{
+				nbaddr := NBAddress{
 					NetboxID:      addr.ID,
 					NBInterfaceID: jintf.ID,
 					Address:       addr.Address,
-				})
+					Role:          addr.Role,
+				}
+				if addr.VRF != nil {
+					nbaddr.VRF = addr.VRF.Name
+				}
+				addresses = append(addresses, nbaddr)
 			}
-			dbdevice.Interfaces = append(dbdevice.Interfaces, NBInterface{
+			iface := NBInterface{
 				NetboxID:    jintf.ID,
 				Name:        jintf.Name,
 				Description: jintf.Description,
+				Type:        jintf.Type,
 				CfRole:      jintf.CustomFields.InterfaceRole,
 				Tags:        netboxTagsToNBTags(jintf.Tags),
 				Addresses:   addresses,
-			})
+			}
+			if jintf.VRF != nil {
+				iface.VRF = jintf.VRF.Name
+			}
+			if jintf.Cable != nil {
+				iface.CableID = jintf.Cable.ID
+			}
+			dbdevice.Interfaces = append(dbdevice.Interfaces, iface)
 		}
 
 		dbdevices = append(dbdevices, &dbdevice)
@@ -319,7 +347,6 @@ func (nb *NetboxClient) NetboxAPICall(grapqlQuery string, name string, id int, s
 func (nb *NetboxClient) netboxAPICall(grapqlQuery string, filterArgs string, start, limit int) ([]byte, error) {
 	var err error
 	url := nb.P.URL + "/graphql/"
-	slog.Debug("Calling Netbox graphql API", "URL", url)
 
 	args := filterArgs + fmt.Sprintf("pagination: { start: %d, limit: %d }", start, limit)
 	filter_ := map[string]string{
@@ -440,6 +467,34 @@ func (nb *NetboxClient) restPatch(endpoint string, payload any) error {
 	return nil
 }
 
+// restGet sends a GET to a Netbox REST endpoint and unmarshals the response
+// into out.
+func (nb *NetboxClient) restGet(endpoint string, out any) error {
+	url := nb.P.URL + endpoint
+
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Authorization", "Token "+nb.P.Token)
+
+	resp, err := nb.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("netbox GET %s: %w", endpoint, err)
+	}
+	defer resp.Body.Close()
+
+	respData, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("netbox GET %s failed: %s: %s", endpoint, resp.Status, string(respData))
+	}
+	return json.Unmarshal(respData, out)
+}
+
 // restPost sends a POST with a JSON body to a Netbox REST endpoint and
 // unmarshals the response into out (skipped if out is nil).
 func (nb *NetboxClient) restPost(endpoint string, payload any, out any) error {
@@ -541,6 +596,102 @@ func (nb *NetboxClient) GetManufacturer(name string, id int) (*NetboxManufacture
 }
 
 // ---------------------------------------------------------------------------
+//  Tenant
+// ---------------------------------------------------------------------------
+
+// TenantCustomFields holds the subset of a tenant's custom_fields this
+// package knows about: "source"/"source_id" identify which external
+// system (and which record within it, e.g. a CRM customer id) a tenant
+// was synced from.
+type TenantCustomFields struct {
+	Source   string `json:"source"`
+	SourceID string `json:"source_id"`
+}
+
+// JSONTenant is a tenancy.Tenant row, fetched via GraphQL (see
+// tenantListGraphQLbody).
+type JSONTenant struct {
+	ID   uint               `json:"id,string"`
+	Name string             `json:"name"`
+	Slug string             `json:"slug"`
+	CF   TenantCustomFields `json:"custom_fields"`
+}
+
+type JSONTenants struct {
+	Data struct {
+		Tenants []JSONTenant `json:"tenant_list"`
+	} `json:"data"`
+}
+
+func parseTenants(tenants []JSONTenant) []*NBTenant {
+	dbtenants := make([]*NBTenant, 0, len(tenants))
+	for _, t := range tenants {
+		dbtenants = append(dbtenants, &NBTenant{
+			NetboxID:   t.ID,
+			Name:       t.Name,
+			Slug:       t.Slug,
+			CfSource:   t.CF.Source,
+			CfSourceID: t.CF.SourceID,
+		})
+	}
+	return dbtenants
+}
+
+// GetTenants fetches all tenants via a single tenant_list query.
+func (nb *NetboxClient) GetTenants() ([]*NBTenant, error) {
+	var tenants JSONTenants
+	err := nb.fetchAllPages(tenantListGraphQLbody, "", -1, func(respdata []byte) (int, uint, error) {
+		var page JSONTenants
+		if err := json.Unmarshal(respdata, &page); err != nil {
+			return 0, 0, err
+		}
+		tenants.Data.Tenants = append(tenants.Data.Tenants, page.Data.Tenants...)
+		var lastID uint
+		if n := len(page.Data.Tenants); n > 0 {
+			lastID = page.Data.Tenants[n-1].ID
+		}
+		return len(page.Data.Tenants), lastID, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return parseTenants(tenants.Data.Tenants), nil
+}
+
+// NetboxTenantREST is a tenancy.Tenant row as returned by the REST API
+// (unlike JSONTenant, whose `id,string` tag matches the GraphQL ID scalar,
+// this one's id is a plain JSON number).
+type NetboxTenantREST struct {
+	ID   uint   `json:"id"`
+	Name string `json:"name"`
+	Slug string `json:"slug"`
+}
+
+// CreateTenant creates a tenant. Netbox requires both name and slug to be
+// unique; changes may set "custom_fields" (map[string]any) and any other
+// writable tenant field alongside name/slug.
+func (nb *NetboxClient) CreateTenant(name, slug string, changes map[string]any) (*NetboxTenantREST, error) {
+	payload := map[string]any{
+		"name": name,
+		"slug": slug,
+	}
+	for k, v := range changes {
+		payload[k] = v
+	}
+	var result NetboxTenantREST
+	if err := nb.restPost("/api/tenancy/tenants/", payload, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+// UpdateTenant updates a Netbox tenant with arbitrary (possibly nested,
+// e.g. custom_fields) values.
+func (nb *NetboxClient) UpdateTenant(tenantID uint, changes map[string]any) error {
+	return nb.restPatch("/api/tenancy/tenants/"+strconv.FormatUint(uint64(tenantID), 10)+"/", changes)
+}
+
+// ---------------------------------------------------------------------------
 //  Device Type
 // ---------------------------------------------------------------------------
 
@@ -633,12 +784,18 @@ func (nb *NetboxClient) GetDevices() ([]*NBDevice, error) {
 	return nb.GetDevices_("", -1)
 }
 
+// GetDevice fetches one device by name or id, returning nil, nil (not an
+// error) if none matches - mirroring pynetbox's own .get(), which returns
+// None rather than raising for an unknown name.
 func (nb *NetboxClient) GetDevice(name string, id int) (*NBDevice, error) {
 	// filter = "(filters: {id:{ exact: \"" + strconv.Itoa(id) + "\"}})"
 	// filter = "(filters: {name:{ exact: \"" + name + "\"}})"
 	devices, err := nb.GetDevices_(name, id)
 	if err != nil {
 		return nil, err
+	}
+	if len(devices) == 0 {
+		return nil, nil
 	}
 	return devices[0], nil
 }
@@ -735,9 +892,30 @@ func (nb *NetboxClient) InterfaceCreate(device_id int, name string) (*NetboxInte
 	return &result, nil
 }
 
-// Update an interface
+// CreateInterfaceWithOptions is InterfaceCreate plus arbitrary extra REST
+// fields (e.g. "type": "lag", "vrf": {"name": ...}) - for callers (like
+// internal/device-sync) that know more about the interface being created
+// than InterfaceCreate's fixed "virtual" type allows for.
+func (nb *NetboxClient) CreateInterfaceWithOptions(deviceID uint, name string, extra map[string]any) (*NetboxInterfaceREST, error) {
+	payload := map[string]any{
+		"device": deviceID,
+		"name":   name,
+		"type":   "virtual",
+	}
+	for k, v := range extra {
+		payload[k] = v
+	}
+	var result NetboxInterfaceREST
+	if err := nb.restPost("/api/dcim/interfaces/", payload, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+// Update an interface. changes is any, not map[string]string, so callers
+// can send nested values (e.g. {"vrf": {"name": "MGMT"}}).
 // PATCH /api/dcim/interfaces/{id}/
-func (nb *NetboxClient) InterfaceUpdate(interface_id int, changes map[string]string) error {
+func (nb *NetboxClient) InterfaceUpdate(interface_id int, changes map[string]any) error {
 	return nb.restPatch("/api/dcim/interfaces/"+strconv.Itoa(interface_id)+"/", changes)
 }
 
@@ -785,7 +963,155 @@ func (nb *NetboxClient) InterfaceAddressCreate(intf NetboxInterface, address Net
 	return &result, nil
 }
 
+// CreateInterfaceAddress creates an ip address assigned to interfaceID,
+// plus arbitrary extra REST fields (e.g. "role": "anycast",
+// "vrf": {"name": ...}) - unlike InterfaceAddressCreate, which only sends
+// address/status, this is what internal/device-sync's address_create needs
+// (Netbox models VRF and role on the address, not the interface).
+func (nb *NetboxClient) CreateInterfaceAddress(interfaceID uint, address string, extra map[string]any) (*NBAddress, error) {
+	payload := map[string]any{
+		"assigned_object_type": "dcim.interface",
+		"assigned_object_id":   interfaceID,
+		"address":              address,
+	}
+	for k, v := range extra {
+		payload[k] = v
+	}
+	var result NetboxAddressREST
+	if err := nb.restPost("/api/ipam/ip-addresses/", payload, &result); err != nil {
+		return nil, err
+	}
+	return &NBAddress{NetboxID: result.ID, NBInterfaceID: interfaceID, Address: result.Address}, nil
+}
+
+// Update an address (e.g. its role or vrf).
+// PATCH /api/ipam/ip-addresses/{id}/
+func (nb *NetboxClient) AddressUpdate(address_id int, changes map[string]any) error {
+	return nb.restPatch("/api/ipam/ip-addresses/"+strconv.Itoa(address_id)+"/", changes)
+}
+
 // Delete an address
 func (nb *NetboxClient) AddressDelete(address_id int) error {
 	return nb.restDelete("/api/ipam/ip-addresses/" + strconv.Itoa(address_id) + "/")
+}
+
+// ---------------------------------------------------------------------------
+//  Cable
+// ---------------------------------------------------------------------------
+
+// netboxCableTermination is one entry of a cable's a_terminations/
+// b_terminations array, as accepted/returned by the REST API. Netbox
+// supports terminating a cable on more than one object per side (a
+// distribution cable); this package only ever creates/expects exactly one,
+// matching device_nb_sync's own connections-between-interfaces model.
+type netboxCableTermination struct {
+	ObjectType string `json:"object_type"`
+	ObjectID   uint   `json:"object_id"`
+}
+
+// netboxCableREST is a dcim.Cable row as returned by the REST API.
+type netboxCableREST struct {
+	ID            uint                     `json:"id"`
+	ATerminations []netboxCableTermination `json:"a_terminations"`
+	BTerminations []netboxCableTermination `json:"b_terminations"`
+}
+
+func (c *netboxCableREST) toNBCable() *NBCable {
+	cable := &NBCable{NetboxID: c.ID}
+	if len(c.ATerminations) > 0 {
+		cable.AInterface = c.ATerminations[0].ObjectID
+	}
+	if len(c.BTerminations) > 0 {
+		cable.BInterface = c.BTerminations[0].ObjectID
+	}
+	return cable
+}
+
+// GetCable fetches one cable by id - interfaces already carry their own
+// cable id (NBInterface.CableID, from the GraphQL device query), so this is
+// how a caller resolves it to the cable's actual terminations.
+func (nb *NetboxClient) GetCable(cableID uint) (*NBCable, error) {
+	var result netboxCableREST
+	if err := nb.restGet("/api/dcim/cables/"+strconv.FormatUint(uint64(cableID), 10)+"/", &result); err != nil {
+		return nil, err
+	}
+	return result.toNBCable(), nil
+}
+
+// CreateCable creates a cable directly connecting two interfaces.
+func (nb *NetboxClient) CreateCable(aInterfaceID, bInterfaceID uint) (*NBCable, error) {
+	payload := map[string]any{
+		"a_terminations": []netboxCableTermination{{ObjectType: "dcim.interface", ObjectID: aInterfaceID}},
+		"b_terminations": []netboxCableTermination{{ObjectType: "dcim.interface", ObjectID: bInterfaceID}},
+	}
+	var result netboxCableREST
+	if err := nb.restPost("/api/dcim/cables/", payload, &result); err != nil {
+		return nil, err
+	}
+	return result.toNBCable(), nil
+}
+
+// DeleteCable deletes a cable.
+func (nb *NetboxClient) DeleteCable(cableID uint) error {
+	return nb.restDelete("/api/dcim/cables/" + strconv.FormatUint(uint64(cableID), 10) + "/")
+}
+
+// UpdateCableTermination replaces one side of an existing cable with
+// interfaceID - side 1 is the A side, side 2 is the B side.
+func (nb *NetboxClient) UpdateCableTermination(cableID uint, side int, interfaceID uint) error {
+	terminations := []netboxCableTermination{{ObjectType: "dcim.interface", ObjectID: interfaceID}}
+	var field string
+	switch side {
+	case 1:
+		field = "a_terminations"
+	case 2:
+		field = "b_terminations"
+	default:
+		return fmt.Errorf("unknown cable termination side %d", side)
+	}
+	return nb.restPatch("/api/dcim/cables/"+strconv.FormatUint(uint64(cableID), 10)+"/", map[string]any{field: terminations})
+}
+
+// ---------------------------------------------------------------------------
+//  Prefix
+// ---------------------------------------------------------------------------
+
+type netboxPrefixREST struct {
+	ID     uint   `json:"id"`
+	Prefix string `json:"prefix"`
+	Status struct {
+		Value string `json:"value"`
+	} `json:"status"`
+}
+
+func (p *netboxPrefixREST) toNBPrefix() *NBPrefix {
+	return &NBPrefix{NetboxID: p.ID, Prefix: p.Prefix, Status: p.Status.Value}
+}
+
+// GetPrefix looks up an existing prefix by its exact CIDR value, returning
+// nil (no error) if none exists.
+func (nb *NetboxClient) GetPrefix(prefix string) (*NBPrefix, error) {
+	var page struct {
+		Results []netboxPrefixREST `json:"results"`
+	}
+	if err := nb.restGet("/api/ipam/prefixes/?prefix="+url.QueryEscape(prefix), &page); err != nil {
+		return nil, err
+	}
+	if len(page.Results) == 0 {
+		return nil, nil
+	}
+	return page.Results[0].toNBPrefix(), nil
+}
+
+// CreatePrefix creates a new prefix with status "active".
+func (nb *NetboxClient) CreatePrefix(prefix string) (*NBPrefix, error) {
+	payload := map[string]any{
+		"prefix": prefix,
+		"status": "active",
+	}
+	var result netboxPrefixREST
+	if err := nb.restPost("/api/ipam/prefixes/", payload, &result); err != nil {
+		return nil, err
+	}
+	return result.toNBPrefix(), nil
 }

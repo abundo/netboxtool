@@ -56,11 +56,16 @@ type NBInterface struct {
 	Name        string `json:"name" gorm:"type:varchar(255)"`
 	Description string `json:"description" gorm:"type:varchar(255)"`
 	Enabled     bool   `json:"enabled"`
+	Type        string `json:"type" gorm:"type:varchar(255)"`
 	VRF         string `json:"vrf" gorm:"type:varchar(255)"`
 	CfRole      string `json:"cf_role" gorm:"type:varchar(255)"`
 	// runtime data
 	LineProtocolStatus string `gorm:"-"`
 	InterfaceStatus    string `gorm:"-"`
+	// CableID is the netbox ID of the cable terminated on this interface, 0
+	// if none - populated by GraphQL reads (deviceListGraphQLbody's
+	// interfaces{cable{id}}), not stored.
+	CableID uint `gorm:"-"`
 
 	Addresses []NBAddress `json:"addresses"` // gorm:"constraint:OnUpdate:CASCADE,OnDelete:SET NULL;"`
 	Tags      []NBTag     `json:"tags"`
@@ -72,6 +77,28 @@ type NBAddress struct {
 	NBInterfaceID uint   `json:"interface_id"`
 	NetboxID      uint   `json:"netbox_id"`
 	Address       string `gorm:"type:varchar(80)"`
+	// Role is ipam.IPAddress.role (e.g. "anycast"), "" if unset.
+	Role string `gorm:"type:varchar(80)"`
+	// VRF is the name of the VRF this address belongs to, "" for the
+	// global/default VRF.
+	VRF string `gorm:"type:varchar(255)"`
+}
+
+// NBCable is a dcim.Cable connecting exactly two interfaces (the only shape
+// internal/device-sync creates/inspects - Netbox cables can in principle
+// terminate on more than two endpoints, e.g. distribution cables, which
+// this type doesn't attempt to represent).
+type NBCable struct {
+	NetboxID   uint
+	AInterface uint // interface ID on the A side
+	BInterface uint // interface ID on the B side
+}
+
+// NBPrefix is an ipam.Prefix row.
+type NBPrefix struct {
+	NetboxID uint
+	Prefix   string
+	Status   string
 }
 
 type NBTag struct {
@@ -85,6 +112,15 @@ type NBTag struct {
 type NBParent struct {
 	NBModel
 	NBDeviceID uint `json:"device_id"`
+}
+
+type NBTenant struct {
+	NBModel
+	NetboxID   uint   `json:"netbox_id"`
+	Name       string `json:"name" gorm:"type:varchar(255)"`
+	Slug       string `json:"slug" gorm:"type:varchar(255)"`
+	CfSource   string `json:"cf_source" gorm:"type:varchar(255)"`
+	CfSourceID string `json:"cf_source_id" gorm:"type:varchar(255)"`
 }
 
 // IsTag reports whether the device has a tag with the given name.
