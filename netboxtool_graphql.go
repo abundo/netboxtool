@@ -16,6 +16,8 @@ var deviceListGraphQLbody = `
         name
         comments
         status
+        latitude
+        longitude
         device_type {
             id
             model
@@ -31,6 +33,8 @@ var deviceListGraphQLbody = `
         site {
             id
             name
+            latitude
+            longitude
         }
         primary_ip4 {
             id
@@ -60,6 +64,18 @@ var deviceListGraphQLbody = `
             }
             cable {
                 id
+            }
+            untagged_vlan {
+                id
+                vid
+            }
+            tagged_vlans {
+                id
+                vid
+            }
+            qinq_svlan {
+                id
+                vid
             }
             tags {
                 id

@@ -14,26 +14,31 @@ type NBModel struct {
 
 type NBDevice struct {
 	NBModel
-	VM                 bool
-	NetboxID           uint          `json:"netbox_id"`
-	Name               string        `json:"name" gorm:"type:varchar(255)"`
-	Comments           string        `json:"comments" gorm:"type:varchar(255)"`
-	Enabled            bool          `json:"enabled"`
-	Manufacturer       string        `json:"manufacturer" gorm:"type:varchar(255)"`
-	ManufacturerID     uint          `json:"manufacturer_id"`
-	ModelName          string        `json:"model_name" gorm:"type:varchar(255)"`
-	ModelID            uint          `json:"model_id"`
-	Platform           string        `json:"platform" gorm:"type:varchar(255)"`
-	PlatformID         uint          `json:"platform_id"`
-	PrimaryIPv4        string        `json:"primary_ipv4" gorm:"type:varchar(255)"`
-	PrimaryIPv4ID      uint          `json:"primary_ipv4_id"`
-	PrimaryIPv6        string        `json:"primary_ipv6" gorm:"type:varchar(255)"`
-	PrimaryIPv6ID      uint          `json:"primary_ipv6_id"`
-	Role               string        `json:"role" gorm:"type:varchar(255)"`
-	RoleID             uint          `json:"role_id"`
-	Site               string        `json:"site" gorm:"type:varchar(255)"`
-	SiteID             uint          `json:"site_id"`
-	Status             string        `json:"status" gorm:"type:varchar(255)"`
+	VM             bool
+	NetboxID       uint   `json:"netbox_id"`
+	Name           string `json:"name" gorm:"type:varchar(255)"`
+	Comments       string `json:"comments" gorm:"type:varchar(255)"`
+	Enabled        bool   `json:"enabled"`
+	Manufacturer   string `json:"manufacturer" gorm:"type:varchar(255)"`
+	ManufacturerID uint   `json:"manufacturer_id"`
+	ModelName      string `json:"model_name" gorm:"type:varchar(255)"`
+	ModelID        uint   `json:"model_id"`
+	Platform       string `json:"platform" gorm:"type:varchar(255)"`
+	PlatformID     uint   `json:"platform_id"`
+	PrimaryIPv4    string `json:"primary_ipv4" gorm:"type:varchar(255)"`
+	PrimaryIPv4ID  uint   `json:"primary_ipv4_id"`
+	PrimaryIPv6    string `json:"primary_ipv6" gorm:"type:varchar(255)"`
+	PrimaryIPv6ID  uint   `json:"primary_ipv6_id"`
+	Role           string `json:"role" gorm:"type:varchar(255)"`
+	RoleID         uint   `json:"role_id"`
+	Site           string `json:"site" gorm:"type:varchar(255)"`
+	SiteID         uint   `json:"site_id"`
+	Status         string `json:"status" gorm:"type:varchar(255)"`
+	// Latitude/Longitude are the device's own GPS coordinates if set in
+	// Netbox, else inherited from its site (resolved in parseDevices) -
+	// nil if neither the device nor its site has coordinates.
+	Latitude           *float64      `json:"latitude"`
+	Longitude          *float64      `json:"longitude"`
 	CfAlarmTimeperiod  string        `json:"cf_alarm_timeperiod" gorm:"type:varchar(255)"`
 	CfAlarmDestination string        `json:"cf_alarm_destination" gorm:"type:varchar(255)"`
 	CfAlarmInterfaces  bool          `json:"cf_alarm_interfaces"`
@@ -67,6 +72,11 @@ type NBInterface struct {
 	// if none - populated by GraphQL reads (deviceListGraphQLbody's
 	// interfaces{cable{id}}), not stored.
 	CableID uint `gorm:"-"`
+	// UntaggedVLAN/TaggedVLANs are VIDs (not Netbox IDs), populated by
+	// GraphQL reads (deviceListGraphQLbody's interfaces{untagged_vlan,
+	// tagged_vlans}), not stored. UntaggedVLAN is 0 if unset.
+	UntaggedVLAN int   `gorm:"-"`
+	TaggedVLANs  []int `gorm:"-"`
 
 	Addresses []NBAddress `json:"addresses"` // gorm:"constraint:OnUpdate:CASCADE,OnDelete:SET NULL;"`
 	Tags      []NBTag     `json:"tags"`
@@ -100,6 +110,22 @@ type NBPrefix struct {
 	NetboxID uint
 	Prefix   string
 	Status   string
+}
+
+// NBVlanGroup is an ipam.VLANGroup row - always global (no scope) for the
+// callers in this codebase, which use a single VLAN group for every device.
+type NBVlanGroup struct {
+	NetboxID uint
+	Name     string
+	Slug     string
+}
+
+// NBVlan is an ipam.VLAN row, scoped to a VLAN group.
+type NBVlan struct {
+	NetboxID uint
+	VID      int
+	Name     string
+	GroupID  uint
 }
 
 type NBTag struct {

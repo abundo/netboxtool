@@ -24,6 +24,10 @@ import (
 // limit, so fetchAllPages loops until a page comes back short.
 const graphqlPageSize = 1000
 
+// restPageSize is the page size used for paginated REST list endpoints
+// (e.g. GetCables), analogous to graphqlPageSize for GraphQL queries.
+const restPageSize = 1000
+
 // Configuration file YAML structure
 type ConfigNetbox struct {
 	URL      string `boa:"configonly" yaml:"url"`
@@ -89,9 +93,27 @@ type NetboxRole struct {
 	Name string `json:"name"`
 }
 type NetboxSite struct {
-	ID   uint   `json:"id,string"`
-	Name string `json:"name"`
+	ID        uint       `json:"id,string"`
+	Name      string     `json:"name"`
+	Latitude  *NBDecimal `json:"latitude"`
+	Longitude *NBDecimal `json:"longitude"`
 }
+
+// NBDecimal unmarshals a Netbox GraphQL Decimal scalar (used for
+// latitude/longitude), which may be serialized as either a bare JSON
+// number or a JSON string, into a float64.
+type NBDecimal float64
+
+func (d *NBDecimal) UnmarshalJSON(b []byte) error {
+	s := strings.Trim(string(b), `"`)
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return fmt.Errorf("netbox decimal %q: %w", s, err)
+	}
+	*d = NBDecimal(f)
+	return nil
+}
+
 type NetboxTag struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
@@ -105,6 +127,15 @@ type NetboxCustomFields struct {
 	Location         string `json:"location"`
 	MonitorIcinga    bool   `json:"monitor_icinga"`
 	MonitorGrafana   bool   `json:"monitor_grafana"`
+	// MonitorLibrenms is a *bool, not bool: netbox returns null for a
+	// custom field that has never been set on a device (no default
+	// configured), and that must be distinguished from an explicit
+	// false - unset devices default to monitored, matching the old
+	// (pre-Go) sync script's behavior. See the copy into
+	// dbdevice.CfMonitorLibrenms below.
+	MonitorLibrenms *bool  `json:"monitor_librenms"`
+	Parents         string `json:"parents"`
+	ConnectMethod   string `json:"connection_method"`
 	LibrenmsID      int    `json:"librenms_id"`
 }
 
@@ -121,6 +152,8 @@ type JSONDevice struct {
 	Platform    *NetboxPlatform    `json:"platform"`
 	Role        *NetboxRole        `json:"role"`
 	Site        *NetboxSite        `json:"site"`
+	Latitude    *NBDecimal         `json:"latitude"`
+	Longitude   *NBDecimal         `json:"longitude"`
 	PrimaryIPv4 *NetboxAddress     `json:"primary_ip4"`
 	PrimaryIPv6 *NetboxAddress     `json:"primary_ip6"`
 	Tags        []NetboxTag        `json:"tags"`
@@ -142,6 +175,11 @@ type JSONVMs struct {
 // Response from the interfaces field nested under
 // - device_list          (dcim.Interface)
 // - virtual_machine_list (virtualization.VMInterface)
+type NetboxVlanRef struct {
+	ID  uint `json:"id,string"`
+	VID int  `json:"vid"`
+}
+
 type JSONInterface struct {
 	ID          uint          `json:"id,string"`
 	Name        string        `json:"name"`
@@ -151,6 +189,12 @@ type JSONInterface struct {
 	Cable       *struct {
 		ID uint `json:"id,string"`
 	} `json:"cable"`
+	UntaggedVLAN *NetboxVlanRef  `json:"untagged_vlan"`
+	TaggedVLANs  []NetboxVlanRef `json:"tagged_vlans"`
+	// QinQSVlan is dcim.Interface.qinq_svlan - the S-VLAN Netbox uses in
+	// place of untagged_vlan when mode is "q-in-q", mutually exclusive with
+	// UntaggedVLAN.
+	QinQSVlan    *NetboxVlanRef  `json:"qinq_svlan"`
 	Tags         []NetboxTag     `json:"tags"`
 	IPAddresses  []NetboxAddress `json:"ip_addresses"`
 	CustomFields struct {
@@ -222,6 +266,20 @@ func (nb *NetboxClient) parseDevices(devices []JSONDevice, vm bool) ([]*NBDevice
 			dbdevice.SiteID = device.Site.ID
 			dbdevice.Site = device.Site.Name
 		}
+		// Prefer the device's own GPS coordinates; fall back to its site's
+		// only when both site coordinates are set (never mix one axis from
+		// each source). A device on the placeholder "Default" site is
+		// treated the same as having no site above, so it gets no
+		// site-inherited coordinates either.
+		switch {
+		case device.Latitude != nil && device.Longitude != nil:
+			lat, lng := float64(*device.Latitude), float64(*device.Longitude)
+			dbdevice.Latitude, dbdevice.Longitude = &lat, &lng
+		case device.Site != nil && device.Site.Name != "Default" &&
+			device.Site.Latitude != nil && device.Site.Longitude != nil:
+			lat, lng := float64(*device.Site.Latitude), float64(*device.Site.Longitude)
+			dbdevice.Latitude, dbdevice.Longitude = &lat, &lng
+		}
 		if device.Platform != nil {
 			dbdevice.PlatformID = device.Platform.ID
 			dbdevice.Platform = device.Platform.Name
@@ -247,9 +305,14 @@ func (nb *NetboxClient) parseDevices(devices []JSONDevice, vm bool) ([]*NBDevice
 		dbdevice.CfLocation = device.CF.Location
 		dbdevice.CfMonitorGrafana = device.CF.MonitorGrafana
 		dbdevice.CfMonitorIcinga = device.CF.MonitorIcinga
-		dbdevice.CfMonitorLibrenms = device.CF.MonitorLibrenms
+		if device.CF.MonitorLibrenms == nil {
+			dbdevice.CfMonitorLibrenms = true
+		} else {
+			dbdevice.CfMonitorLibrenms = *device.CF.MonitorLibrenms
+		}
 		dbdevice.CfSource = "netbox"
 		dbdevice.CfSourceID = device.ID
+		dbdevice.LibrenmsID = uint(device.CF.LibrenmsID)
 		dbdevice.Tags = netboxTagsToNBTags(device.Tags)
 
 		for _, jintf := range device.Interfaces {
@@ -280,6 +343,20 @@ func (nb *NetboxClient) parseDevices(devices []JSONDevice, vm bool) ([]*NBDevice
 			}
 			if jintf.Cable != nil {
 				iface.CableID = jintf.Cable.ID
+			}
+			switch {
+			case jintf.UntaggedVLAN != nil:
+				iface.UntaggedVLAN = jintf.UntaggedVLAN.VID
+			case jintf.QinQSVlan != nil:
+				// Netbox uses qinq_svlan instead of untagged_vlan when mode
+				// is "q-in-q" (the two are mutually exclusive) - merged into
+				// the same field here since callers treat UntaggedVLAN as
+				// "whichever single outer/native VLAN this interface has",
+				// regardless of which Netbox mode it's carried under.
+				iface.UntaggedVLAN = jintf.QinQSVlan.VID
+			}
+			for _, v := range jintf.TaggedVLANs {
+				iface.TaggedVLANs = append(iface.TaggedVLANs, v.VID)
 			}
 			dbdevice.Interfaces = append(dbdevice.Interfaces, iface)
 		}
@@ -851,10 +928,16 @@ func (nb *NetboxClient) GetVMs() ([]*NBDevice, error) {
 	return nb.GetVM_("", -1)
 }
 
+// GetVM fetches one virtual machine by name or id, returning nil, nil (not
+// an error) if none matches - mirroring GetDevice/pynetbox's own .get(),
+// which returns None rather than raising for an unknown name.
 func (nb *NetboxClient) GetVM(name string, id int) (*NBDevice, error) {
 	devices, err := nb.GetVM_(name, id)
 	if err != nil {
 		return nil, err
+	}
+	if len(devices) == 0 {
+		return nil, nil
 	}
 	return devices[0], nil
 }
@@ -1024,6 +1107,17 @@ func (c *netboxCableREST) toNBCable() *NBCable {
 	return cable
 }
 
+// isInterfaceToInterface reports whether both ends of the cable terminate
+// on exactly one dcim.interface each - the only shape NBCable represents.
+// Netbox cables can otherwise terminate on other object types (console
+// ports, circuit terminations, ...) or on more than one object per side
+// (distribution cables), neither of which toNBCable's ObjectID would
+// resolve to the right thing.
+func (c *netboxCableREST) isInterfaceToInterface() bool {
+	return len(c.ATerminations) == 1 && c.ATerminations[0].ObjectType == "dcim.interface" &&
+		len(c.BTerminations) == 1 && c.BTerminations[0].ObjectType == "dcim.interface"
+}
+
 // GetCable fetches one cable by id - interfaces already carry their own
 // cable id (NBInterface.CableID, from the GraphQL device query), so this is
 // how a caller resolves it to the cable's actual terminations.
@@ -1046,6 +1140,46 @@ func (nb *NetboxClient) CreateCable(aInterfaceID, bInterfaceID uint) (*NBCable, 
 		return nil, err
 	}
 	return result.toNBCable(), nil
+}
+
+// netboxCableListREST is one page of the REST cables list endpoint.
+// "next" is the full URL (scheme+host+query) of the following page, or
+// nil on the last page - Netbox's standard DRF pagination shape.
+type netboxCableListREST struct {
+	Next    *string           `json:"next"`
+	Results []netboxCableREST `json:"results"`
+}
+
+// GetCables fetches every cable in Netbox via the REST API, paginating
+// until "next" is null. Unlike GetCable, which resolves one already-known
+// cable id, this is how a caller discovers the full set of cables - e.g.
+// to build a device connectivity map, not just the ones this package
+// itself created. Cables not directly connecting two interfaces (see
+// isInterfaceToInterface) are silently skipped rather than represented
+// with a wrong/zero AInterface or BInterface.
+func (nb *NetboxClient) GetCables() ([]*NBCable, error) {
+	var cables []*NBCable
+	endpoint := "/api/dcim/cables/?limit=" + strconv.Itoa(restPageSize)
+	for endpoint != "" {
+		var page netboxCableListREST
+		if err := nb.restGet(endpoint, &page); err != nil {
+			return nil, err
+		}
+		for _, c := range page.Results {
+			if c.isInterfaceToInterface() {
+				cables = append(cables, c.toNBCable())
+			}
+		}
+		if page.Next == nil {
+			break
+		}
+		next, err := url.Parse(*page.Next)
+		if err != nil {
+			return nil, fmt.Errorf("netbox cables: parse next page url: %w", err)
+		}
+		endpoint = "/api/dcim/cables/?" + next.RawQuery
+	}
+	return cables, nil
 }
 
 // DeleteCable deletes a cable.
@@ -1111,4 +1245,98 @@ func (nb *NetboxClient) CreatePrefix(prefix string) (*NBPrefix, error) {
 		return nil, err
 	}
 	return result.toNBPrefix(), nil
+}
+
+// ---------------------------------------------------------------------------
+//  VLAN Group / VLAN
+// ---------------------------------------------------------------------------
+
+type netboxVlanGroupREST struct {
+	ID   uint   `json:"id"`
+	Name string `json:"name"`
+	Slug string `json:"slug"`
+}
+
+func (g *netboxVlanGroupREST) toNBVlanGroup() *NBVlanGroup {
+	return &NBVlanGroup{NetboxID: g.ID, Name: g.Name, Slug: g.Slug}
+}
+
+// GetVlanGroup looks up an existing VLAN group by its exact name, returning
+// nil (no error) if none exists.
+func (nb *NetboxClient) GetVlanGroup(name string) (*NBVlanGroup, error) {
+	var page struct {
+		Results []netboxVlanGroupREST `json:"results"`
+	}
+	if err := nb.restGet("/api/ipam/vlan-groups/?name="+url.QueryEscape(name), &page); err != nil {
+		return nil, err
+	}
+	if len(page.Results) == 0 {
+		return nil, nil
+	}
+	return page.Results[0].toNBVlanGroup(), nil
+}
+
+// CreateVlanGroup creates a new, global (unscoped) VLAN group.
+func (nb *NetboxClient) CreateVlanGroup(name, slug string) (*NBVlanGroup, error) {
+	payload := map[string]any{
+		"name": name,
+		"slug": slug,
+	}
+	var result netboxVlanGroupREST
+	if err := nb.restPost("/api/ipam/vlan-groups/", payload, &result); err != nil {
+		return nil, err
+	}
+	return result.toNBVlanGroup(), nil
+}
+
+type netboxVlanREST struct {
+	ID    uint   `json:"id"`
+	VID   int    `json:"vid"`
+	Name  string `json:"name"`
+	Group *struct {
+		ID uint `json:"id"`
+	} `json:"group"`
+}
+
+func (v *netboxVlanREST) toNBVlan() *NBVlan {
+	vlan := &NBVlan{NetboxID: v.ID, VID: v.VID, Name: v.Name}
+	if v.Group != nil {
+		vlan.GroupID = v.Group.ID
+	}
+	return vlan
+}
+
+// GetVlan looks up an existing VLAN by VID within groupID, returning nil (no
+// error) if none exists.
+func (nb *NetboxClient) GetVlan(vid int, groupID uint) (*NBVlan, error) {
+	var page struct {
+		Results []netboxVlanREST `json:"results"`
+	}
+	endpoint := fmt.Sprintf("/api/ipam/vlans/?vid=%d&group_id=%d", vid, groupID)
+	if err := nb.restGet(endpoint, &page); err != nil {
+		return nil, err
+	}
+	if len(page.Results) == 0 {
+		return nil, nil
+	}
+	return page.Results[0].toNBVlan(), nil
+}
+
+// CreateVlan creates a new VLAN in groupID.
+func (nb *NetboxClient) CreateVlan(vid int, name string, groupID uint) (*NBVlan, error) {
+	payload := map[string]any{
+		"vid":   vid,
+		"name":  name,
+		"group": groupID,
+	}
+	var result netboxVlanREST
+	if err := nb.restPost("/api/ipam/vlans/", payload, &result); err != nil {
+		return nil, err
+	}
+	return result.toNBVlan(), nil
+}
+
+// UpdateVlan applies changes (field -> new value) to an existing VLAN.
+func (nb *NetboxClient) UpdateVlan(id uint, changes map[string]any) error {
+	return nb.restPatch("/api/ipam/vlans/"+strconv.FormatUint(uint64(id), 10)+"/", changes)
 }
