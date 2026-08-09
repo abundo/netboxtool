@@ -45,6 +45,7 @@ type NBDevice struct {
 	CfMonitorLibrenms  bool          `json:"cf_monitor_librenms"`
 	CfSource           string        `json:"cf_source" gorm:"type:varchar(255)"`
 	CfSourceID         uint          `json:"cf_source_id"`
+	LibrenmsID         uint          `json:"librenms_id"`
 	Interfaces         []NBInterface `json:"interfaces"` // gorm:"constraint:OnUpdate:CASCADE,OnDelete:SET NULL;"`
 	Tags               []NBTag       `json:"tags"`
 }

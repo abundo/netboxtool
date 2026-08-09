@@ -105,10 +105,7 @@ type NetboxCustomFields struct {
 	Location         string `json:"location"`
 	MonitorIcinga    bool   `json:"monitor_icinga"`
 	MonitorGrafana   bool   `json:"monitor_grafana"`
-	MonitorLibrenms  bool   `json:"monitor_librenms"`
-	Parents          string `json:"parents"`
-	ConnectMethod    string `json:"connection_method"`
-	LibrenmsDeviceID int    `json:"librenms_device_id"`
+	LibrenmsID      int    `json:"librenms_id"`
 }
 
 // Response from Graphql device_list / virtual_machine_list query.
