@@ -274,6 +274,27 @@ package talks to, to ≥v4.6.8 — confirmed, not just theorized, to help both
 (the flat path), independent of and in addition to any further
 client-side work.
 
+**The large instance confirms this at real scale**: upgraded 4.5.10 →
+4.6.8 (1,375 devices / 37,024 interfaces / 3,794 addresses throughout):
+
+| | A (nested) | G (flat, concurrent) | C interfaces phase (REST) |
+|---|---|---|---|
+| 4.5.x (pre-upgrade, from the original A–G run) | 2m47.7s | 20.2s | 2m39.9s |
+| 4.6.8 | **45.38s** | **6.261s** | 2m14.1s |
+
+The Netbox upgrade alone cut the nested query by **~3.7x** (2m47.7s →
+45.38s) even with no client-side change at all — consistent with the
+small instance, confirming these bugs scale with row count as expected
+(bigger inventory, bigger fixed win). On top of the upgraded server, the
+flat+concurrent approach is *still* worth **~7.25x** (45.38s → 6.261s) —
+so this wasn't just working around soon-to-be-fixed Netbox bugs, there's
+a real, independent client-side win underneath. Combined,
+old-nested-on-pre-upgrade vs. flat-concurrent-on-4.6.8: **2m47.7s →
+6.261s, ~26.8x**. REST stayed just as broken (2m39.9s → 2m14.1s, no
+meaningful change) — the same conclusion as the small instance: REST's
+interfaces-endpoint slowness is unrelated to this bug cluster and
+unaffected by the upgrade.
+
 ## Testing
 
 `netboxtool_test.go` covers `GetTenant`'s REST filtered lookup;
