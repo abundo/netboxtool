@@ -37,22 +37,26 @@ type NBDevice struct {
 	// Latitude/Longitude are the device's own GPS coordinates if set in
 	// Netbox, else inherited from its site (resolved in parseDevices) -
 	// nil if neither the device nor its site has coordinates.
-	Latitude           *float64      `json:"latitude"`
-	Longitude          *float64      `json:"longitude"`
-	CfAlarmTimeperiod  string        `json:"cf_alarm_timeperiod" gorm:"type:varchar(255)"`
-	CfAlarmDestination string        `json:"cf_alarm_destination" gorm:"type:varchar(255)"`
-	CfAlarmInterfaces  bool          `json:"cf_alarm_interfaces"`
-	CfBackupOxidized   bool          `json:"cf_backup_oxidized"`
-	CfConnectionMethod string        `json:"cf_connection_method" gorm:"type:varchar(255)"`
-	CfLocation         string        `json:"cf_location" gorm:"type:varchar(255)"`
-	CfMonitorGrafana   bool          `json:"cf_monitor_grafana"`
-	CfMonitorIcinga    bool          `json:"cf_monitor_icinga"`
-	CfMonitorLibrenms  bool          `json:"cf_monitor_librenms"`
-	CfSource           string        `json:"cf_source" gorm:"type:varchar(255)"`
-	CfSourceID         uint          `json:"cf_source_id"`
-	LibrenmsID         uint          `json:"librenms_id"`
-	Interfaces         []NBInterface `json:"interfaces"` // gorm:"constraint:OnUpdate:CASCADE,OnDelete:SET NULL;"`
-	Tags               []NBTag       `json:"tags"`
+	Latitude           *float64 `json:"latitude"`
+	Longitude          *float64 `json:"longitude"`
+	CfAlarmTimeperiod  string   `json:"cf_alarm_timeperiod" gorm:"type:varchar(255)"`
+	CfAlarmDestination string   `json:"cf_alarm_destination" gorm:"type:varchar(255)"`
+	CfAlarmInterfaces  bool     `json:"cf_alarm_interfaces"`
+	CfBackupOxidized   bool     `json:"cf_backup_oxidized"`
+	CfConnectionMethod string   `json:"cf_connection_method" gorm:"type:varchar(255)"`
+	CfLocation         string   `json:"cf_location" gorm:"type:varchar(255)"`
+	CfMonitorGrafana   bool     `json:"cf_monitor_grafana"`
+	CfMonitorIcinga    bool     `json:"cf_monitor_icinga"`
+	CfMonitorLibrenms  bool     `json:"cf_monitor_librenms"`
+	CfSource           string   `json:"cf_source" gorm:"type:varchar(255)"`
+	CfSourceID         uint     `json:"cf_source_id"`
+	// CfBecsOid is the BECS element oid this device was synced from
+	// (custom field "becs_oid"). Zero if the device was not created by
+	// the BECS sync.
+	CfBecsOid  uint          `json:"cf_becs_oid"`
+	LibrenmsID uint          `json:"librenms_id"`
+	Interfaces []NBInterface `json:"interfaces"` // gorm:"constraint:OnUpdate:CASCADE,OnDelete:SET NULL;"`
+	Tags       []NBTag       `json:"tags"`
 }
 
 type NBInterface struct {
@@ -89,6 +93,9 @@ type NBInterface struct {
 	// "q-in-q"), populated by GraphQL reads (deviceListGraphQLbody's
 	// interfaces{mode}), not stored. "" if the interface isn't a switchport.
 	Mode string `gorm:"-"`
+	// CfBecsOid is the BECS interface oid this interface was synced
+	// from (custom field "becs_oid"). Zero if unset.
+	CfBecsOid uint `json:"cf_becs_oid"`
 
 	Addresses []NBAddress `json:"addresses"` // gorm:"constraint:OnUpdate:CASCADE,OnDelete:SET NULL;"`
 	Tags      []NBTag     `json:"tags"`

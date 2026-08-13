@@ -8,7 +8,6 @@ import (
 	"bytes"
 	"crypto/tls"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -118,6 +117,38 @@ type NetboxTag struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
 }
+
+// FlexUint unmarshals a JSON number, a numeric string, or null/"" into a
+// uint. Used for Netbox custom fields that may be configured as integer
+// in some instances and text in others (currently just becs_oid).
+type FlexUint uint
+
+func (v *FlexUint) UnmarshalJSON(b []byte) error {
+	if string(b) == "null" || string(b) == `""` {
+		*v = 0
+		return nil
+	}
+	var n uint64
+	if err := json.Unmarshal(b, &n); err == nil {
+		*v = FlexUint(n)
+		return nil
+	}
+	var s string
+	if err := json.Unmarshal(b, &s); err != nil {
+		return err
+	}
+	if s == "" {
+		*v = 0
+		return nil
+	}
+	n, err := strconv.ParseUint(s, 10, 64)
+	if err != nil {
+		return fmt.Errorf("flexuint %q: %w", s, err)
+	}
+	*v = FlexUint(n)
+	return nil
+}
+
 type NetboxCustomFields struct {
 	AlarmDestination string `json:"alarm_destination"`
 	AlarmInterfaces  bool   `json:"alarm_interfaces"`
@@ -137,6 +168,9 @@ type NetboxCustomFields struct {
 	Parents         string `json:"parents"`
 	ConnectMethod   string `json:"connection_method"`
 	LibrenmsID      int    `json:"librenms_id"`
+	// BecsOid is the BECS element oid a device was synced from. Netbox
+	// may serialize the custom field as a JSON number or a string.
+	BecsOid FlexUint `json:"becs_oid"`
 }
 
 // Response from Graphql device_list / virtual_machine_list query.
@@ -205,7 +239,8 @@ type JSONInterface struct {
 	Tags         []NetboxTag     `json:"tags"`
 	IPAddresses  []NetboxAddress `json:"ip_addresses"`
 	CustomFields struct {
-		InterfaceRole string `json:"interface_role"`
+		InterfaceRole string   `json:"interface_role"`
+		BecsOid       FlexUint `json:"becs_oid"`
 	} `json:"custom_fields"`
 }
 
@@ -319,6 +354,7 @@ func (nb *NetboxClient) parseDevices(devices []JSONDevice, vm bool) ([]*NBDevice
 		}
 		dbdevice.CfSource = "netbox"
 		dbdevice.CfSourceID = device.ID
+		dbdevice.CfBecsOid = uint(device.CF.BecsOid)
 		dbdevice.LibrenmsID = uint(device.CF.LibrenmsID)
 		dbdevice.Tags = netboxTagsToNBTags(device.Tags)
 
@@ -344,6 +380,7 @@ func (nb *NetboxClient) parseDevices(devices []JSONDevice, vm bool) ([]*NBDevice
 				Mode:        jintf.Mode,
 				Label:       jintf.Label,
 				CfRole:      jintf.CustomFields.InterfaceRole,
+				CfBecsOid:   uint(jintf.CustomFields.BecsOid),
 				Tags:        netboxTagsToNBTags(jintf.Tags),
 				Addresses:   addresses,
 			}
@@ -378,23 +415,27 @@ func (nb *NetboxClient) parseDevices(devices []JSONDevice, vm bool) ([]*NBDevice
 	return dbdevices, nil
 }
 
-// Create a device in netbox
-// assumes there is a "device template" for the device in netbox
-// todo: if no device template, send error?
-// Note: tags must exist in Netbox
-// Note: tags must be the slug name
-// Returns True if ok
-func (nb *NetboxClient) CreateDevice(
-	name string,
-	site_id int,
-	device_type_id int,
-	role string,
-	platform string,
-	manufacturer_id int,
-	model string,
-) (*JSONDevices, error) {
+// NetboxDeviceREST is a dcim.Device row as returned by the REST API
+// (unlike JSONDevice, whose `id,string` tag matches the GraphQL ID scalar,
+// this one's id is a plain JSON number).
+type NetboxDeviceREST struct {
+	ID   uint   `json:"id"`
+	Name string `json:"name"`
+}
 
-	return nil, errors.New("not implemented")
+// CreateDevice creates a physical device. extra may set site, device_type,
+// role, platform, status, tags, custom_fields, and any other writable
+// device field alongside name - same shape as CreateTenant.
+func (nb *NetboxClient) CreateDevice(name string, extra map[string]any) (*NetboxDeviceREST, error) {
+	payload := map[string]any{"name": name}
+	for k, v := range extra {
+		payload[k] = v
+	}
+	var result NetboxDeviceREST
+	if err := nb.restPost("/api/dcim/devices/", payload, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
 }
 
 type graphqlErrors struct {
@@ -854,6 +895,71 @@ func (nb *NetboxClient) GetSites() ([]*NetboxSite, error) {
 		out = append(out, &site)
 	}
 	return out, nil
+}
+
+// NetboxNamedRef is a REST row that has id/name/slug - sites, device
+// roles, platforms and tags all share this shape. GraphQL IDs are strings;
+// REST IDs are numbers, so this is distinct from NetboxSite/NetboxRole.
+type NetboxNamedRef struct {
+	ID   uint   `json:"id"`
+	Name string `json:"name"`
+	Slug string `json:"slug"`
+}
+
+type netboxNamedListREST struct {
+	Results []NetboxNamedRef `json:"results"`
+}
+
+func (nb *NetboxClient) restGetNamed(endpoint string) (*NetboxNamedRef, error) {
+	var page netboxNamedListREST
+	if err := nb.restGet(endpoint, &page); err != nil {
+		return nil, err
+	}
+	if len(page.Results) == 0 {
+		return nil, nil
+	}
+	return &page.Results[0], nil
+}
+
+// GetSiteByName looks up a site by its exact display name, including the
+// placeholder "Default" site that GetSites skips. Returns nil, nil if none
+// matches.
+func (nb *NetboxClient) GetSiteByName(name string) (*NetboxNamedRef, error) {
+	return nb.restGetNamed("/api/dcim/sites/?name=" + url.QueryEscape(name))
+}
+
+// GetDeviceRoleBySlug looks up a device role by slug. Returns nil, nil if
+// none matches.
+func (nb *NetboxClient) GetDeviceRoleBySlug(slug string) (*NetboxNamedRef, error) {
+	return nb.restGetNamed("/api/dcim/device-roles/?slug=" + url.QueryEscape(slug))
+}
+
+// GetPlatformBySlug looks up a platform by slug. Returns nil, nil if none
+// matches.
+func (nb *NetboxClient) GetPlatformBySlug(slug string) (*NetboxNamedRef, error) {
+	return nb.restGetNamed("/api/dcim/platforms/?slug=" + url.QueryEscape(slug))
+}
+
+// GetTagBySlug looks up a tag by slug. Returns nil, nil if none matches.
+func (nb *NetboxClient) GetTagBySlug(slug string) (*NetboxNamedRef, error) {
+	return nb.restGetNamed("/api/extras/tags/?slug=" + url.QueryEscape(slug))
+}
+
+// EnsureTag returns the tag with the given slug, creating it (name+slug)
+// if it does not already exist.
+func (nb *NetboxClient) EnsureTag(name, slug string) (*NetboxNamedRef, error) {
+	tag, err := nb.GetTagBySlug(slug)
+	if err != nil || tag != nil {
+		return tag, err
+	}
+	var created NetboxNamedRef
+	if err := nb.restPost("/api/extras/tags/", map[string]any{
+		"name": name,
+		"slug": slug,
+	}, &created); err != nil {
+		return nil, err
+	}
+	return &created, nil
 }
 
 // ---------------------------------------------------------------------------

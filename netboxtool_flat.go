@@ -48,7 +48,8 @@ type flatVMInterfaceRow struct {
 	Description  string      `json:"description"`
 	Tags         []NetboxTag `json:"tags"`
 	CustomFields struct {
-		InterfaceRole string `json:"interface_role"`
+		InterfaceRole string   `json:"interface_role"`
+		BecsOid       FlexUint `json:"becs_oid"`
 	} `json:"custom_fields"`
 	VirtualMachine *struct {
 		ID uint `json:"id,string"`
