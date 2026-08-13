@@ -1469,6 +1469,7 @@ func (nb *NetboxClient) CreateCable(aInterfaceID, bInterfaceID uint) (*NBCable, 
 	payload := map[string]any{
 		"a_terminations": []netboxCableTermination{{ObjectType: "dcim.interface", ObjectID: aInterfaceID}},
 		"b_terminations": []netboxCableTermination{{ObjectType: "dcim.interface", ObjectID: bInterfaceID}},
+		"label":          "lldp",
 	}
 	var result netboxCableREST
 	if err := nb.restPost("/api/dcim/cables/", payload, &result); err != nil {
