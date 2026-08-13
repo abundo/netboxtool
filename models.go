@@ -50,13 +50,15 @@ type NBDevice struct {
 	CfMonitorLibrenms  bool     `json:"cf_monitor_librenms"`
 	CfSource           string   `json:"cf_source" gorm:"type:varchar(255)"`
 	CfSourceID         uint     `json:"cf_source_id"`
-	// CfBecsOid is the BECS element oid this device was synced from
-	// (custom field "becs_oid"). Zero if the device was not created by
-	// the BECS sync.
-	CfBecsOid  uint          `json:"cf_becs_oid"`
-	LibrenmsID uint          `json:"librenms_id"`
-	Interfaces []NBInterface `json:"interfaces"` // gorm:"constraint:OnUpdate:CASCADE,OnDelete:SET NULL;"`
-	Tags       []NBTag       `json:"tags"`
+	// CfParents is the comma-separated "parents" custom field.
+	CfParents string `json:"cf_parents"`
+	// CustomFields is the raw custom_fields object from Netbox, including
+	// keys this package also copies onto typed Cf* fields. Callers that
+	// need an instance-specific field not modelled here read it from here.
+	CustomFields map[string]any `json:"custom_fields"`
+	LibrenmsID   uint           `json:"librenms_id"`
+	Interfaces   []NBInterface  `json:"interfaces"` // gorm:"constraint:OnUpdate:CASCADE,OnDelete:SET NULL;"`
+	Tags         []NBTag        `json:"tags"`
 }
 
 type NBInterface struct {
@@ -93,9 +95,10 @@ type NBInterface struct {
 	// "q-in-q"), populated by GraphQL reads (deviceListGraphQLbody's
 	// interfaces{mode}), not stored. "" if the interface isn't a switchport.
 	Mode string `gorm:"-"`
-	// CfBecsOid is the BECS interface oid this interface was synced
-	// from (custom field "becs_oid"). Zero if unset.
-	CfBecsOid uint `json:"cf_becs_oid"`
+	// CustomFields is the raw custom_fields object from Netbox. Typed
+	// fields this package knows about (currently CfRole) are also copied
+	// out separately.
+	CustomFields map[string]any `json:"custom_fields"`
 
 	Addresses []NBAddress `json:"addresses"` // gorm:"constraint:OnUpdate:CASCADE,OnDelete:SET NULL;"`
 	Tags      []NBTag     `json:"tags"`

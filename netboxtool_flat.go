@@ -43,14 +43,11 @@ type flatInterfaceListPage struct {
 // flatVMInterfaceRow is vm_interface_list's flat row shape, mirroring
 // virtualMachineListGraphQLbody's (much smaller) interfaces field set.
 type flatVMInterfaceRow struct {
-	ID           uint        `json:"id,string"`
-	Name         string      `json:"name"`
-	Description  string      `json:"description"`
-	Tags         []NetboxTag `json:"tags"`
-	CustomFields struct {
-		InterfaceRole string   `json:"interface_role"`
-		BecsOid       FlexUint `json:"becs_oid"`
-	} `json:"custom_fields"`
+	ID             uint                  `json:"id,string"`
+	Name           string                `json:"name"`
+	Description    string                `json:"description"`
+	Tags           []NetboxTag           `json:"tags"`
+	CustomFields   InterfaceCustomFields `json:"custom_fields"`
 	VirtualMachine *struct {
 		ID uint `json:"id,string"`
 	} `json:"virtual_machine"`

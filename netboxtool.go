@@ -118,37 +118,6 @@ type NetboxTag struct {
 	Name string `json:"name"`
 }
 
-// FlexUint unmarshals a JSON number, a numeric string, or null/"" into a
-// uint. Used for Netbox custom fields that may be configured as integer
-// in some instances and text in others (currently just becs_oid).
-type FlexUint uint
-
-func (v *FlexUint) UnmarshalJSON(b []byte) error {
-	if string(b) == "null" || string(b) == `""` {
-		*v = 0
-		return nil
-	}
-	var n uint64
-	if err := json.Unmarshal(b, &n); err == nil {
-		*v = FlexUint(n)
-		return nil
-	}
-	var s string
-	if err := json.Unmarshal(b, &s); err != nil {
-		return err
-	}
-	if s == "" {
-		*v = 0
-		return nil
-	}
-	n, err := strconv.ParseUint(s, 10, 64)
-	if err != nil {
-		return fmt.Errorf("flexuint %q: %w", s, err)
-	}
-	*v = FlexUint(n)
-	return nil
-}
-
 type NetboxCustomFields struct {
 	AlarmDestination string `json:"alarm_destination"`
 	AlarmInterfaces  bool   `json:"alarm_interfaces"`
@@ -168,9 +137,41 @@ type NetboxCustomFields struct {
 	Parents         string `json:"parents"`
 	ConnectMethod   string `json:"connection_method"`
 	LibrenmsID      int    `json:"librenms_id"`
-	// BecsOid is the BECS element oid a device was synced from. Netbox
-	// may serialize the custom field as a JSON number or a string.
-	BecsOid FlexUint `json:"becs_oid"`
+	// All is the raw custom_fields object, including keys that also have
+	// typed fields above. Callers that need an instance-specific field
+	// this package does not model read it from All (or from
+	// NBDevice.CustomFields, which is a copy).
+	All map[string]any `json:"-"`
+}
+
+func (c *NetboxCustomFields) UnmarshalJSON(data []byte) error {
+	type known NetboxCustomFields
+	var k known
+	if err := json.Unmarshal(data, &k); err != nil {
+		return err
+	}
+	*c = NetboxCustomFields(k)
+	return json.Unmarshal(data, &c.All)
+}
+
+// InterfaceCustomFields is dcim.Interface.custom_fields. interface_role is
+// the one field this package copies onto NBInterface.CfRole; everything
+// else is available via All / NBInterface.CustomFields.
+type InterfaceCustomFields struct {
+	InterfaceRole string         `json:"interface_role"`
+	All           map[string]any `json:"-"`
+}
+
+func (c *InterfaceCustomFields) UnmarshalJSON(data []byte) error {
+	type known struct {
+		InterfaceRole string `json:"interface_role"`
+	}
+	var k known
+	if err := json.Unmarshal(data, &k); err != nil {
+		return err
+	}
+	c.InterfaceRole = k.InterfaceRole
+	return json.Unmarshal(data, &c.All)
 }
 
 // Response from Graphql device_list / virtual_machine_list query.
@@ -235,13 +236,10 @@ type JSONInterface struct {
 	// QinQSVlan is dcim.Interface.qinq_svlan - the S-VLAN Netbox uses in
 	// place of untagged_vlan when mode is "q-in-q", mutually exclusive with
 	// UntaggedVLAN.
-	QinQSVlan    *NetboxVlanRef  `json:"qinq_svlan"`
-	Tags         []NetboxTag     `json:"tags"`
-	IPAddresses  []NetboxAddress `json:"ip_addresses"`
-	CustomFields struct {
-		InterfaceRole string   `json:"interface_role"`
-		BecsOid       FlexUint `json:"becs_oid"`
-	} `json:"custom_fields"`
+	QinQSVlan    *NetboxVlanRef        `json:"qinq_svlan"`
+	Tags         []NetboxTag           `json:"tags"`
+	IPAddresses  []NetboxAddress       `json:"ip_addresses"`
+	CustomFields InterfaceCustomFields `json:"custom_fields"`
 }
 
 // ---------------------------------------------------------------------------
@@ -354,7 +352,8 @@ func (nb *NetboxClient) parseDevices(devices []JSONDevice, vm bool) ([]*NBDevice
 		}
 		dbdevice.CfSource = "netbox"
 		dbdevice.CfSourceID = device.ID
-		dbdevice.CfBecsOid = uint(device.CF.BecsOid)
+		dbdevice.CfParents = device.CF.Parents
+		dbdevice.CustomFields = device.CF.All
 		dbdevice.LibrenmsID = uint(device.CF.LibrenmsID)
 		dbdevice.Tags = netboxTagsToNBTags(device.Tags)
 
@@ -373,16 +372,16 @@ func (nb *NetboxClient) parseDevices(devices []JSONDevice, vm bool) ([]*NBDevice
 				addresses = append(addresses, nbaddr)
 			}
 			iface := NBInterface{
-				NetboxID:    jintf.ID,
-				Name:        jintf.Name,
-				Description: jintf.Description,
-				Type:        jintf.Type,
-				Mode:        jintf.Mode,
-				Label:       jintf.Label,
-				CfRole:      jintf.CustomFields.InterfaceRole,
-				CfBecsOid:   uint(jintf.CustomFields.BecsOid),
-				Tags:        netboxTagsToNBTags(jintf.Tags),
-				Addresses:   addresses,
+				NetboxID:     jintf.ID,
+				Name:         jintf.Name,
+				Description:  jintf.Description,
+				Type:         jintf.Type,
+				Mode:         jintf.Mode,
+				Label:        jintf.Label,
+				CfRole:       jintf.CustomFields.InterfaceRole,
+				CustomFields: jintf.CustomFields.All,
+				Tags:         netboxTagsToNBTags(jintf.Tags),
+				Addresses:    addresses,
 			}
 			if jintf.VRF != nil {
 				iface.VRF = jintf.VRF.Name

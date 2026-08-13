@@ -74,31 +74,18 @@ func TestGetTenant_ServerError(t *testing.T) {
 	assert.Nil(t, tenant)
 }
 
-func TestFlexUint_Unmarshal(t *testing.T) {
-	tests := []struct {
-		name    string
-		in      string
-		want    FlexUint
-		wantErr bool
-	}{
-		{name: "number", in: `123`, want: 123},
-		{name: "string", in: `"456"`, want: 456},
-		{name: "null", in: `null`, want: 0},
-		{name: "empty string", in: `""`, want: 0},
-		{name: "invalid", in: `"nope"`, wantErr: true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var v FlexUint
-			err := v.UnmarshalJSON([]byte(tt.in))
-			if tt.wantErr {
-				require.Error(t, err)
-				return
-			}
-			require.NoError(t, err)
-			assert.Equal(t, tt.want, v)
-		})
-	}
+func TestNetboxCustomFields_UnknownKeys(t *testing.T) {
+	var cf NetboxCustomFields
+	require.NoError(t, json.Unmarshal([]byte(`{
+		"parents": "core1",
+		"alarm_destination": "noc",
+		"source_ref": 42
+	}`), &cf))
+	assert.Equal(t, "core1", cf.Parents)
+	assert.Equal(t, "noc", cf.AlarmDestination)
+	require.NotNil(t, cf.All)
+	assert.Equal(t, float64(42), cf.All["source_ref"])
+	assert.Equal(t, "core1", cf.All["parents"])
 }
 
 func TestCreateDevice(t *testing.T) {
@@ -109,28 +96,28 @@ func TestCreateDevice(t *testing.T) {
 
 		var body map[string]any
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
-		assert.Equal(t, "test-lab2", body["name"])
+		assert.Equal(t, "edge1", body["name"])
 		assert.Equal(t, float64(1), body["site"])
 		assert.Equal(t, float64(2), body["device_type"])
 		cf, ok := body["custom_fields"].(map[string]any)
 		require.True(t, ok)
-		assert.Equal(t, float64(3641645), cf["becs_oid"])
+		assert.Equal(t, "inventory", cf["source"])
 
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"id": 99, "name": "test-lab2"}`))
+		_, _ = w.Write([]byte(`{"id": 99, "name": "edge1"}`))
 	})
 
-	created, err := nb.CreateDevice("test-lab2", map[string]any{
+	created, err := nb.CreateDevice("edge1", map[string]any{
 		"site":        1,
 		"device_type": 2,
 		"custom_fields": map[string]any{
-			"becs_oid": 3641645,
+			"source": "inventory",
 		},
 	})
 	require.NoError(t, err)
 	require.NotNil(t, created)
 	assert.Equal(t, uint(99), created.ID)
-	assert.Equal(t, "test-lab2", created.Name)
+	assert.Equal(t, "edge1", created.Name)
 }
 
 func TestGetSiteByName_Found(t *testing.T) {
@@ -164,16 +151,16 @@ func TestEnsureTag_Existing(t *testing.T) {
 	nb := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, http.MethodGet, r.Method)
 		assert.Equal(t, "/api/extras/tags/", r.URL.Path)
-		assert.Equal(t, "becs", r.URL.Query().Get("slug"))
+		assert.Equal(t, "sync-source", r.URL.Query().Get("slug"))
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"results":[{"id":5,"name":"BECS","slug":"becs"}]}`))
+		_, _ = w.Write([]byte(`{"results":[{"id":5,"name":"Sync source","slug":"sync-source"}]}`))
 	})
 
-	tag, err := nb.EnsureTag("BECS", "becs")
+	tag, err := nb.EnsureTag("Sync source", "sync-source")
 	require.NoError(t, err)
 	require.NotNil(t, tag)
 	assert.Equal(t, uint(5), tag.ID)
-	assert.Equal(t, "becs", tag.Slug)
+	assert.Equal(t, "sync-source", tag.Slug)
 }
 
 func TestEnsureTag_Creates(t *testing.T) {
@@ -188,18 +175,18 @@ func TestEnsureTag_Creates(t *testing.T) {
 			assert.Equal(t, "/api/extras/tags/", r.URL.Path)
 			var body map[string]any
 			require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
-			assert.Equal(t, "BECS", body["name"])
-			assert.Equal(t, "becs", body["slug"])
-			_, _ = w.Write([]byte(`{"id":8,"name":"BECS","slug":"becs"}`))
+			assert.Equal(t, "Sync source", body["name"])
+			assert.Equal(t, "sync-source", body["slug"])
+			_, _ = w.Write([]byte(`{"id":8,"name":"Sync source","slug":"sync-source"}`))
 		default:
 			t.Fatalf("unexpected method %s", r.Method)
 		}
 	})
 
-	tag, err := nb.EnsureTag("BECS", "becs")
+	tag, err := nb.EnsureTag("Sync source", "sync-source")
 	require.NoError(t, err)
 	require.NotNil(t, tag)
 	assert.True(t, sawPost)
 	assert.Equal(t, uint(8), tag.ID)
-	assert.Equal(t, "BECS", tag.Name)
+	assert.Equal(t, "Sync source", tag.Name)
 }
