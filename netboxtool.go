@@ -963,6 +963,71 @@ func (nb *NetboxClient) EnsureTag(name, slug string) (*NetboxNamedRef, error) {
 	return &created, nil
 }
 
+type restCustomField struct {
+	ID          uint     `json:"id"`
+	Name        string   `json:"name"`
+	Type        any      `json:"type"`
+	ObjectTypes []string `json:"object_types"`
+}
+
+func (r restCustomField) toNBCustomField() *NBCustomField {
+	cf := &NBCustomField{
+		NetboxID:    r.ID,
+		Name:        r.Name,
+		ObjectTypes: r.ObjectTypes,
+	}
+	switch t := r.Type.(type) {
+	case string:
+		cf.Type = t
+	case map[string]any:
+		if s, ok := t["value"].(string); ok {
+			cf.Type = s
+		}
+	}
+	return cf
+}
+
+type restCustomFieldList struct {
+	Results []restCustomField `json:"results"`
+}
+
+// GetCustomField looks up extras.CustomField by exact name via REST.
+// Returns nil, nil if none matches.
+func (nb *NetboxClient) GetCustomField(name string) (*NBCustomField, error) {
+	var page restCustomFieldList
+	if err := nb.restGet("/api/extras/custom-fields/?name="+url.QueryEscape(name), &page); err != nil {
+		return nil, err
+	}
+	if len(page.Results) == 0 {
+		return nil, nil
+	}
+	return page.Results[0].toNBCustomField(), nil
+}
+
+// RequireCustomField returns an error unless a custom field with the
+// given name exists and is assigned to every object type in objectTypes
+// (e.g. "dcim.device"). Callers that only care that the field exists can
+// pass no object types.
+func (nb *NetboxClient) RequireCustomField(name string, objectTypes ...string) error {
+	cf, err := nb.GetCustomField(name)
+	if err != nil {
+		return err
+	}
+	if cf == nil {
+		return fmt.Errorf("netbox custom field %q is not defined", name)
+	}
+	var missing []string
+	for _, want := range objectTypes {
+		if !cf.AssignedTo(want) {
+			missing = append(missing, want)
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("netbox custom field %q is not assigned to %s", name, strings.Join(missing, ", "))
+	}
+	return nil
+}
+
 // ---------------------------------------------------------------------------
 //  Device Type
 // ---------------------------------------------------------------------------

@@ -168,6 +168,29 @@ type NBL2VPNTermination struct {
 	InterfaceID uint
 }
 
+// NBCustomField is extras.CustomField. ObjectTypes are Netbox object-type
+// strings such as "dcim.device" or "dcim.interface".
+type NBCustomField struct {
+	NetboxID    uint
+	Name        string
+	Type        string // e.g. "integer", "text"
+	ObjectTypes []string
+}
+
+// AssignedTo reports whether this custom field is assigned to objectType
+// (e.g. "dcim.device").
+func (f *NBCustomField) AssignedTo(objectType string) bool {
+	if f == nil {
+		return false
+	}
+	for _, t := range f.ObjectTypes {
+		if t == objectType {
+			return true
+		}
+	}
+	return false
+}
+
 type NBTag struct {
 	NBModel
 	NBDeviceID    uint   `json:"device_id"`

@@ -120,6 +120,61 @@ func TestCreateDevice(t *testing.T) {
 	assert.Equal(t, "edge1", created.Name)
 }
 
+func TestGetCustomField_Found(t *testing.T) {
+	nb := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/api/extras/custom-fields/", r.URL.Path)
+		assert.Equal(t, "source_id", r.URL.Query().Get("name"))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"results": [{
+				"id": 3,
+				"name": "source_id",
+				"type": {"value": "integer", "label": "Integer"},
+				"object_types": ["dcim.device", "dcim.interface"]
+			}]
+		}`))
+	})
+
+	cf, err := nb.GetCustomField("source_id")
+	require.NoError(t, err)
+	require.NotNil(t, cf)
+	assert.Equal(t, uint(3), cf.NetboxID)
+	assert.Equal(t, "source_id", cf.Name)
+	assert.Equal(t, "integer", cf.Type)
+	assert.True(t, cf.AssignedTo("dcim.device"))
+	assert.False(t, cf.AssignedTo("ipam.ipaddress"))
+}
+
+func TestGetCustomField_NotFound(t *testing.T) {
+	nb := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"results":[]}`))
+	})
+
+	cf, err := nb.GetCustomField("missing")
+	require.NoError(t, err)
+	assert.Nil(t, cf)
+}
+
+func TestRequireCustomField(t *testing.T) {
+	nb := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"results": [{
+				"id": 1,
+				"name": "source_id",
+				"type": "integer",
+				"object_types": ["dcim.device"]
+			}]
+		}`))
+	})
+
+	require.NoError(t, nb.RequireCustomField("source_id", "dcim.device"))
+	err := nb.RequireCustomField("source_id", "dcim.device", "dcim.interface")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "dcim.interface")
+}
+
 func TestGetSiteByName_Found(t *testing.T) {
 	nb := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "/api/dcim/sites/", r.URL.Path)
