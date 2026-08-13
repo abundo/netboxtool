@@ -8,8 +8,8 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/abundo/netboxtool"
 	"github.com/GiGurra/boa/pkg/boa"
+	"github.com/abundo/netboxtool"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert/yaml"
 )
@@ -149,6 +149,20 @@ func main() {
 					}
 					Pprint(data)
 					return nil
+				},
+			},
+			boa.CmdT[Params]{
+				Use:   "benchmark",
+				Short: "Compare nested-GraphQL vs. flat-GraphQL vs. flat-REST fetch strategies for devices/interfaces/addresses, with timing",
+				RunFuncE: func(p *Params, cmd *cobra.Command, args []string) error {
+					return RunBenchmark(p.Config.Netbox)
+				},
+			},
+			boa.CmdT[Params]{
+				Use:   "introspect-ip-address",
+				Short: "Print IPAddressType's GraphQL schema (read-only), to find assigned_object's real union type names for a flat ip_address_list query",
+				RunFuncE: func(p *Params, cmd *cobra.Command, args []string) error {
+					return RunIntrospectAddressAssignment(p.Config.Netbox)
 				},
 			}),
 	}.Run()

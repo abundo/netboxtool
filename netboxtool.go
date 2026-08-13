@@ -945,8 +945,14 @@ func (nb *NetboxClient) GetDevices_(name string, id int) ([]*NBDevice, error) {
 	return dbdevices, nil
 }
 
+// GetDevices fetches every physical device, via getDevicesFlat's
+// flat-queries-fetched-concurrently strategy (netboxtool_flat.go) rather
+// than GetDevices_'s single nested query - benchmarked at ~8x faster on a
+// 1400-device/37000-interface instance (see cmd/benchmark.go). A
+// name/id-filtered single-device lookup doesn't have the same problem, so
+// GetDevice still goes through GetDevices_.
 func (nb *NetboxClient) GetDevices() ([]*NBDevice, error) {
-	return nb.GetDevices_("", -1)
+	return nb.getDevicesFlat()
 }
 
 // GetDevice fetches one device by name or id, returning nil, nil (not an
@@ -1015,8 +1021,9 @@ func (nb *NetboxClient) GetVM_(name string, id int) ([]*NBDevice, error) {
 	return data, nil
 }
 
+// GetVMs is GetDevices' virtual-machine equivalent - see getVMsFlat.
 func (nb *NetboxClient) GetVMs() ([]*NBDevice, error) {
-	return nb.GetVM_("", -1)
+	return nb.getVMsFlat()
 }
 
 // GetVM fetches one virtual machine by name or id, returning nil, nil (not
