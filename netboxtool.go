@@ -949,6 +949,28 @@ func (nb *NetboxClient) restGetNamed(endpoint string) (*NetboxNamedRef, error) {
 	return &page.Results[0], nil
 }
 
+// GetSite fetches one site by id via REST. Returns nil, nil if the site is
+// gone, is the placeholder "Default" site, or has no coordinates — the
+// same filter GetSites applies, so a webhook create/update of an unplottable
+// site is a no-op (or a delete of a previously-plotted row).
+func (nb *NetboxClient) GetSite(id uint) (*NetboxSite, error) {
+	var row struct {
+		ID        uint     `json:"id"`
+		Name      string   `json:"name"`
+		Latitude  *float64 `json:"latitude"`
+		Longitude *float64 `json:"longitude"`
+	}
+	found, err := nb.restGetOptional("/api/dcim/sites/"+strconv.FormatUint(uint64(id), 10)+"/", &row)
+	if err != nil {
+		return nil, err
+	}
+	if !found || row.Name == "Default" || row.Latitude == nil || row.Longitude == nil {
+		return nil, nil
+	}
+	lat, lng := NBDecimal(*row.Latitude), NBDecimal(*row.Longitude)
+	return &NetboxSite{ID: row.ID, Name: row.Name, Latitude: &lat, Longitude: &lng}, nil
+}
+
 // GetSiteByName looks up a site by its exact display name, including the
 // placeholder "Default" site that GetSites skips. Returns nil, nil if none
 // matches.
@@ -1423,6 +1445,21 @@ func (nb *NetboxClient) GetCable(cableID uint) (*NBCable, error) {
 	var result netboxCableREST
 	if err := nb.restGet("/api/dcim/cables/"+strconv.FormatUint(uint64(cableID), 10)+"/", &result); err != nil {
 		return nil, err
+	}
+	return result.toNBCable(), nil
+}
+
+// GetInterfaceCable is GetCable for the webhook/single-object path: a 404
+// or a cable that is not exactly one dcim.interface on each end returns
+// nil, nil (factum's Connection table cannot represent those).
+func (nb *NetboxClient) GetInterfaceCable(cableID uint) (*NBCable, error) {
+	var result netboxCableREST
+	found, err := nb.restGetOptional("/api/dcim/cables/"+strconv.FormatUint(uint64(cableID), 10)+"/", &result)
+	if err != nil {
+		return nil, err
+	}
+	if !found || !result.isInterfaceToInterface() {
+		return nil, nil
 	}
 	return result.toNBCable(), nil
 }

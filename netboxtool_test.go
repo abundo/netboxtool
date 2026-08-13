@@ -191,6 +191,83 @@ func TestGetSiteByName_Found(t *testing.T) {
 	assert.Equal(t, "default", site.Slug)
 }
 
+func TestGetSite_Found(t *testing.T) {
+	nb := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/api/dcim/sites/4/", r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":4,"name":"STO","latitude":59.3,"longitude":18.0}`))
+	})
+	site, err := nb.GetSite(4)
+	require.NoError(t, err)
+	require.NotNil(t, site)
+	assert.Equal(t, uint(4), site.ID)
+	assert.Equal(t, "STO", site.Name)
+	require.NotNil(t, site.Latitude)
+	assert.InDelta(t, 59.3, float64(*site.Latitude), 0.001)
+}
+
+func TestGetSite_NoCoordinates(t *testing.T) {
+	nb := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":4,"name":"STO","latitude":null,"longitude":null}`))
+	})
+	site, err := nb.GetSite(4)
+	require.NoError(t, err)
+	assert.Nil(t, site)
+}
+
+func TestGetSite_NotFound(t *testing.T) {
+	nb := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"detail":"Not found."}`))
+	})
+	site, err := nb.GetSite(99)
+	require.NoError(t, err)
+	assert.Nil(t, site)
+}
+
+func TestGetInterfaceCable_InterfaceToInterface(t *testing.T) {
+	nb := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/api/dcim/cables/9/", r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id": 9,
+			"label": "uplink",
+			"a_terminations": [{"object_type":"dcim.interface","object_id":11}],
+			"b_terminations": [{"object_type":"dcim.interface","object_id":22}]
+		}`))
+	})
+	cable, err := nb.GetInterfaceCable(9)
+	require.NoError(t, err)
+	require.NotNil(t, cable)
+	assert.Equal(t, uint(9), cable.NetboxID)
+	assert.Equal(t, uint(11), cable.AInterface)
+	assert.Equal(t, uint(22), cable.BInterface)
+}
+
+func TestGetInterfaceCable_NotInterface(t *testing.T) {
+	nb := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"id": 9,
+			"a_terminations": [{"object_type":"dcim.consoleport","object_id":11}],
+			"b_terminations": [{"object_type":"dcim.interface","object_id":22}]
+		}`))
+	})
+	cable, err := nb.GetInterfaceCable(9)
+	require.NoError(t, err)
+	assert.Nil(t, cable)
+}
+
+func TestGetInterfaceCable_NotFound(t *testing.T) {
+	nb := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	})
+	cable, err := nb.GetInterfaceCable(9)
+	require.NoError(t, err)
+	assert.Nil(t, cable)
+}
+
 func TestGetSiteByName_NotFound(t *testing.T) {
 	nb := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
