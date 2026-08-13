@@ -219,6 +219,7 @@ type JSONInterface struct {
 	ID          uint   `json:"id,string"`
 	Name        string `json:"name"`
 	Description string `json:"description"`
+	Enabled     bool   `json:"enabled"`
 	Type        string `json:"type"`
 	// Mode is dcim.Interface.mode ("access", "tagged", "tagged-all" or
 	// "q-in-q"), "" if the interface isn't a switchport at all.
@@ -375,6 +376,7 @@ func (nb *NetboxClient) parseDevices(devices []JSONDevice, vm bool) ([]*NBDevice
 				NetboxID:     jintf.ID,
 				Name:         jintf.Name,
 				Description:  jintf.Description,
+				Enabled:      jintf.Enabled,
 				Type:         jintf.Type,
 				Mode:         jintf.Mode,
 				Label:        jintf.Label,

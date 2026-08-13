@@ -46,6 +46,7 @@ type flatVMInterfaceRow struct {
 	ID             uint                  `json:"id,string"`
 	Name           string                `json:"name"`
 	Description    string                `json:"description"`
+	Enabled        bool                  `json:"enabled"`
 	Tags           []NetboxTag           `json:"tags"`
 	CustomFields   InterfaceCustomFields `json:"custom_fields"`
 	VirtualMachine *struct {
@@ -217,6 +218,7 @@ func stitchVMs(vms []JSONDevice, interfaces []flatVMInterfaceRow, addresses []fl
 			ID:           row.ID,
 			Name:         row.Name,
 			Description:  row.Description,
+			Enabled:      row.Enabled,
 			Tags:         row.Tags,
 			CustomFields: row.CustomFields,
 			IPAddresses:  addrsByInterface[row.ID],

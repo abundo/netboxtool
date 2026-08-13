@@ -57,6 +57,7 @@ var deviceListGraphQLbody = `
             id
             name
             description
+            enabled
             type
             mode
             label
@@ -197,6 +198,7 @@ var virtualMachineListGraphQLbody = `
           id
           name
           description
+          enabled
           tags {
               id
               name
@@ -286,6 +288,7 @@ var interfaceListGraphQLbody = `
         id
         name
         description
+        enabled
         type
         mode
         label
@@ -364,6 +367,7 @@ var vmInterfaceListGraphQLbody = `
         id
         name
         description
+        enabled
         virtual_machine {
             id
         }
