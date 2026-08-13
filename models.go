@@ -141,6 +141,23 @@ type NBVlan struct {
 	GroupID  uint
 }
 
+// NBL2VPN is an ipam.L2VPN row (e.g. an EVPL/ELINE service).
+type NBL2VPN struct {
+	NetboxID   uint
+	Name       string
+	Slug       string
+	Type       string // e.g. "evpl"
+	Identifier int
+}
+
+// NBL2VPNTermination is an ipam.L2VPNTermination row, binding an L2VPN to
+// one assigned interface (dcim.interface).
+type NBL2VPNTermination struct {
+	NetboxID    uint
+	L2VPNID     uint
+	InterfaceID uint
+}
+
 type NBTag struct {
 	NBModel
 	NBDeviceID    uint   `json:"device_id"`

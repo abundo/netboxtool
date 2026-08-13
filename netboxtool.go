@@ -1432,3 +1432,217 @@ func (nb *NetboxClient) CreateVlan(vid int, name string, groupID uint) (*NBVlan,
 func (nb *NetboxClient) UpdateVlan(id uint, changes map[string]any) error {
 	return nb.restPatch("/api/ipam/vlans/"+strconv.FormatUint(uint64(id), 10)+"/", changes)
 }
+
+// ---------------------------------------------------------------------------
+//  L2VPN / L2VPN termination
+// ---------------------------------------------------------------------------
+
+type netboxL2VPNREST struct {
+	ID         uint   `json:"id"`
+	Name       string `json:"name"`
+	Slug       string `json:"slug"`
+	Identifier int    `json:"identifier"`
+	Type       struct {
+		Value string `json:"value"`
+	} `json:"type"`
+}
+
+func (l *netboxL2VPNREST) toNBL2VPN() *NBL2VPN {
+	return &NBL2VPN{
+		NetboxID:   l.ID,
+		Name:       l.Name,
+		Slug:       l.Slug,
+		Type:       l.Type.Value,
+		Identifier: l.Identifier,
+	}
+}
+
+// CreateL2VPN creates a new L2VPN (e.g. an ELINE service), identified by
+// identifier (the pseudowire ID) - l2vpnType is one of Netbox's L2VPN type
+// choices, e.g. "evpl". identifier is omitted from the payload when 0
+// (Netbox treats it as optional; same-device patches often have no PWID).
+func (nb *NetboxClient) CreateL2VPN(name, slug, l2vpnType string, identifier int) (*NBL2VPN, error) {
+	payload := map[string]any{
+		"name": name,
+		"slug": slug,
+		"type": l2vpnType,
+	}
+	if identifier > 0 {
+		payload["identifier"] = identifier
+	}
+	var result netboxL2VPNREST
+	if err := nb.restPost("/api/vpn/l2vpns/", payload, &result); err != nil {
+		return nil, err
+	}
+	return result.toNBL2VPN(), nil
+}
+
+// GetL2VPN fetches one L2VPN by id.
+func (nb *NetboxClient) GetL2VPN(l2vpnID uint) (*NBL2VPN, error) {
+	var result netboxL2VPNREST
+	if err := nb.restGet("/api/vpn/l2vpns/"+strconv.FormatUint(uint64(l2vpnID), 10)+"/", &result); err != nil {
+		return nil, err
+	}
+	return result.toNBL2VPN(), nil
+}
+
+// GetL2VPNs fetches every L2VPN in Netbox via the REST API, paginating
+// until "next" is null. When l2vpnType is non-empty (e.g. "evpl"), only
+// that type is returned - used by factum-netbox's reverse import of
+// device-synced ELINEs onto Service rows.
+func (nb *NetboxClient) GetL2VPNs(l2vpnType string) ([]*NBL2VPN, error) {
+	var out []*NBL2VPN
+	endpoint := "/api/vpn/l2vpns/?limit=" + strconv.Itoa(restPageSize)
+	if l2vpnType != "" {
+		endpoint += "&type=" + url.QueryEscape(l2vpnType)
+	}
+	for endpoint != "" {
+		var page struct {
+			Next    *string           `json:"next"`
+			Results []netboxL2VPNREST `json:"results"`
+		}
+		if err := nb.restGet(endpoint, &page); err != nil {
+			return nil, err
+		}
+		for i := range page.Results {
+			out = append(out, page.Results[i].toNBL2VPN())
+		}
+		if page.Next == nil {
+			break
+		}
+		next, err := url.Parse(*page.Next)
+		if err != nil {
+			return nil, fmt.Errorf("netbox l2vpns: parse next page url: %w", err)
+		}
+		endpoint = "/api/vpn/l2vpns/?" + next.RawQuery
+	}
+	return out, nil
+}
+
+// UpdateL2VPN applies changes (field -> new value) to an existing L2VPN.
+func (nb *NetboxClient) UpdateL2VPN(l2vpnID uint, changes map[string]any) error {
+	return nb.restPatch("/api/vpn/l2vpns/"+strconv.FormatUint(uint64(l2vpnID), 10)+"/", changes)
+}
+
+// DeleteL2VPN deletes an L2VPN.
+func (nb *NetboxClient) DeleteL2VPN(l2vpnID uint) error {
+	return nb.restDelete("/api/vpn/l2vpns/" + strconv.FormatUint(uint64(l2vpnID), 10) + "/")
+}
+
+type netboxL2VPNTerminationREST struct {
+	ID    uint `json:"id"`
+	L2VPN struct {
+		ID uint `json:"id"`
+	} `json:"l2vpn"`
+	// AssignedObjectID is the flat REST field; Object is the nested
+	// expansion some Netbox versions return on detail endpoints. Either
+	// may be populated depending on the call - toNBL2VPNTermination
+	// prefers Object.ID when set.
+	AssignedObjectID uint `json:"assigned_object_id"`
+	Object           struct {
+		ID uint `json:"id"`
+	} `json:"assigned_object"`
+}
+
+func (t *netboxL2VPNTerminationREST) toNBL2VPNTermination() *NBL2VPNTermination {
+	ifaceID := t.Object.ID
+	if ifaceID == 0 {
+		ifaceID = t.AssignedObjectID
+	}
+	return &NBL2VPNTermination{
+		NetboxID:    t.ID,
+		L2VPNID:     t.L2VPN.ID,
+		InterfaceID: ifaceID,
+	}
+}
+
+// GetL2VPNByName looks up an existing L2VPN by its exact name, returning
+// nil (no error) if none exists. Used by device-sync's ELINE phase to
+// reuse a service-provisioned (or previously synced) L2VPN rather than
+// creating a duplicate.
+func (nb *NetboxClient) GetL2VPNByName(name string) (*NBL2VPN, error) {
+	var page struct {
+		Results []netboxL2VPNREST `json:"results"`
+	}
+	if err := nb.restGet("/api/vpn/l2vpns/?name="+url.QueryEscape(name), &page); err != nil {
+		return nil, err
+	}
+	if len(page.Results) == 0 {
+		return nil, nil
+	}
+	return page.Results[0].toNBL2VPN(), nil
+}
+
+// GetL2VPNByIdentifier looks up an existing L2VPN by its identifier
+// (pseudowire ID), returning nil (no error) if none exists. Fallback for
+// device-sync when the on-device ELINE name doesn't match the Netbox
+// L2VPN name but the pseudowire ID does (e.g. a service-provisioned
+// "CN00570" L2VPN seen on a device under a slightly different patch name).
+func (nb *NetboxClient) GetL2VPNByIdentifier(identifier int) (*NBL2VPN, error) {
+	if identifier == 0 {
+		return nil, nil
+	}
+	var page struct {
+		Results []netboxL2VPNREST `json:"results"`
+	}
+	if err := nb.restGet("/api/vpn/l2vpns/?identifier="+strconv.Itoa(identifier), &page); err != nil {
+		return nil, err
+	}
+	if len(page.Results) == 0 {
+		return nil, nil
+	}
+	return page.Results[0].toNBL2VPN(), nil
+}
+
+// GetL2VPNTerminations returns every termination on l2vpnID (typically 1-2
+// for an EVPL). Paginated the same way as GetCables in case a multipoint
+// L2VPN ever lands here with more than one page of ends.
+func (nb *NetboxClient) GetL2VPNTerminations(l2vpnID uint) ([]*NBL2VPNTermination, error) {
+	var terms []*NBL2VPNTermination
+	endpoint := "/api/vpn/l2vpn-terminations/?l2vpn_id=" +
+		strconv.FormatUint(uint64(l2vpnID), 10) +
+		"&limit=" + strconv.Itoa(restPageSize)
+	for endpoint != "" {
+		var page struct {
+			Next    *string                      `json:"next"`
+			Results []netboxL2VPNTerminationREST `json:"results"`
+		}
+		if err := nb.restGet(endpoint, &page); err != nil {
+			return nil, err
+		}
+		for i := range page.Results {
+			terms = append(terms, page.Results[i].toNBL2VPNTermination())
+		}
+		if page.Next == nil {
+			break
+		}
+		next, err := url.Parse(*page.Next)
+		if err != nil {
+			return nil, fmt.Errorf("netbox l2vpn terminations: parse next page url: %w", err)
+		}
+		endpoint = "/api/vpn/l2vpn-terminations/?" + next.RawQuery
+	}
+	return terms, nil
+}
+
+// CreateL2VPNTermination terminates l2vpnID on interfaceID - unlike a
+// cable's a_terminations/b_terminations (object_type/object_id), an L2VPN
+// termination uses Netbox's generic "assigned object" fields
+// (assigned_object_type/assigned_object_id).
+func (nb *NetboxClient) CreateL2VPNTermination(l2vpnID, interfaceID uint) (*NBL2VPNTermination, error) {
+	payload := map[string]any{
+		"l2vpn":                l2vpnID,
+		"assigned_object_type": "dcim.interface",
+		"assigned_object_id":   interfaceID,
+	}
+	var result netboxL2VPNTerminationREST
+	if err := nb.restPost("/api/vpn/l2vpn-terminations/", payload, &result); err != nil {
+		return nil, err
+	}
+	return result.toNBL2VPNTermination(), nil
+}
+
+// DeleteL2VPNTermination deletes an L2VPN termination.
+func (nb *NetboxClient) DeleteL2VPNTermination(terminationID uint) error {
+	return nb.restDelete("/api/vpn/l2vpn-terminations/" + strconv.FormatUint(uint64(terminationID), 10) + "/")
+}
