@@ -564,6 +564,10 @@ func (nb *NetboxClient) fetchAllPagesRaw(fetchPage func(start int) ([]byte, erro
 // opposed to NetboxAPICall, which only talks to the read-only GraphQL
 // endpoint) and returns an error if the response is not 2xx.
 func (nb *NetboxClient) restPatch(endpoint string, payload any) error {
+	return nb.restPatchOut(endpoint, payload, nil)
+}
+
+func (nb *NetboxClient) restPatchOut(endpoint string, payload, out any) error {
 	url := nb.P.URL + endpoint
 
 	jsonPayload, err := json.Marshal(payload)
@@ -592,35 +596,58 @@ func (nb *NetboxClient) restPatch(endpoint string, payload any) error {
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("netbox PATCH %s failed: %s: %s", endpoint, resp.Status, string(respData))
 	}
-	return nil
+	if out == nil {
+		return nil
+	}
+	return json.Unmarshal(respData, out)
 }
 
 // restGet sends a GET to a Netbox REST endpoint and unmarshals the response
 // into out.
 func (nb *NetboxClient) restGet(endpoint string, out any) error {
+	found, err := nb.restGetOptional(endpoint, out)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return fmt.Errorf("netbox GET %s failed: 404 Not Found", endpoint)
+	}
+	return nil
+}
+
+// restGetOptional is restGet that treats HTTP 404 as (false, nil) rather
+// than an error — used when the caller has to distinguish "Netbox has
+// already deleted this object" from a transport/API failure.
+func (nb *NetboxClient) restGetOptional(endpoint string, out any) (bool, error) {
 	url := nb.P.URL + endpoint
 
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
-		return err
+		return false, err
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Authorization", "Token "+nb.P.Token)
 
 	resp, err := nb.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("netbox GET %s: %w", endpoint, err)
+		return false, fmt.Errorf("netbox GET %s: %w", endpoint, err)
 	}
 	defer resp.Body.Close()
 
 	respData, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return err
+		return false, err
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		return false, nil
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("netbox GET %s failed: %s: %s", endpoint, resp.Status, string(respData))
+		return false, fmt.Errorf("netbox GET %s failed: %s: %s", endpoint, resp.Status, string(respData))
 	}
-	return json.Unmarshal(respData, out)
+	if err := json.Unmarshal(respData, out); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // restPost sends a POST with a JSON body to a Netbox REST endpoint and
