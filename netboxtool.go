@@ -1016,13 +1016,22 @@ type restCustomField struct {
 	ID          uint     `json:"id"`
 	Name        string   `json:"name"`
 	Type        any      `json:"type"`
+	Label       string   `json:"label"`
+	Description string   `json:"description"`
+	Required    bool     `json:"required"`
+	GroupName   string   `json:"group_name"`
 	ObjectTypes []string `json:"object_types"`
+	ChoiceSet   any      `json:"choice_set"`
 }
 
 func (r restCustomField) toNBCustomField() *NBCustomField {
 	cf := &NBCustomField{
 		NetboxID:    r.ID,
 		Name:        r.Name,
+		Label:       r.Label,
+		Description: r.Description,
+		Required:    r.Required,
+		GroupName:   r.GroupName,
 		ObjectTypes: r.ObjectTypes,
 	}
 	switch t := r.Type.(type) {
@@ -1033,7 +1042,21 @@ func (r restCustomField) toNBCustomField() *NBCustomField {
 			cf.Type = s
 		}
 	}
+	cf.ChoiceSetID = parseChoiceSetID(r.ChoiceSet)
 	return cf
+}
+
+func parseChoiceSetID(v any) uint {
+	switch t := v.(type) {
+	case float64:
+		return uint(t)
+	case map[string]any:
+		switch id := t["id"].(type) {
+		case float64:
+			return uint(id)
+		}
+	}
+	return 0
 }
 
 type restCustomFieldList struct {

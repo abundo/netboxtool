@@ -173,8 +173,33 @@ type NBL2VPNTermination struct {
 type NBCustomField struct {
 	NetboxID    uint
 	Name        string
-	Type        string // e.g. "integer", "text"
+	Type        string // "text", "integer", "boolean", "select", ...
+	Label       string
+	Description string
+	Required    bool
+	GroupName   string
 	ObjectTypes []string
+	ChoiceSetID uint
+}
+
+// NBChoiceSet is extras.CustomFieldChoiceSet. ExtraChoices are [value, label]
+// pairs Netbox stores on the set (not on the custom field).
+type NBChoiceSet struct {
+	NetboxID     uint
+	Name         string
+	ExtraChoices [][2]string
+}
+
+// CustomFieldWrite is the body for creating or updating a custom field.
+type CustomFieldWrite struct {
+	Name        string
+	Type        string
+	Label       string
+	Description string
+	GroupName   string
+	Required    bool
+	ObjectTypes []string
+	ChoiceSetID uint
 }
 
 // AssignedTo reports whether this custom field is assigned to objectType
