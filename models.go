@@ -72,11 +72,23 @@ type NBInterface struct {
 	// if none - populated by GraphQL reads (deviceListGraphQLbody's
 	// interfaces{cable{id}}), not stored.
 	CableID uint `gorm:"-"`
+	// Label is dcim.Interface.label, Netbox's free-text interface label
+	// (distinct from Name) - populated by GraphQL reads
+	// (deviceListGraphQLbody's interfaces{label}), not stored.
+	Label string `gorm:"-"`
+	// ParentID is the netbox ID of this interface's parent interface, 0 if
+	// none - populated by GraphQL reads (deviceListGraphQLbody's
+	// interfaces{parent{id}}), not stored.
+	ParentID uint `gorm:"-"`
 	// UntaggedVLAN/TaggedVLANs are VIDs (not Netbox IDs), populated by
 	// GraphQL reads (deviceListGraphQLbody's interfaces{untagged_vlan,
 	// tagged_vlans}), not stored. UntaggedVLAN is 0 if unset.
 	UntaggedVLAN int   `gorm:"-"`
 	TaggedVLANs  []int `gorm:"-"`
+	// Mode is dcim.Interface.mode ("access", "tagged", "tagged-all" or
+	// "q-in-q"), populated by GraphQL reads (deviceListGraphQLbody's
+	// interfaces{mode}), not stored. "" if the interface isn't a switchport.
+	Mode string `gorm:"-"`
 
 	Addresses []NBAddress `json:"addresses"` // gorm:"constraint:OnUpdate:CASCADE,OnDelete:SET NULL;"`
 	Tags      []NBTag     `json:"tags"`
@@ -103,6 +115,7 @@ type NBCable struct {
 	NetboxID   uint
 	AInterface uint // interface ID on the A side
 	BInterface uint // interface ID on the B side
+	Label      string
 }
 
 // NBPrefix is an ipam.Prefix row.

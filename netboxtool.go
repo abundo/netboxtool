@@ -181,12 +181,19 @@ type NetboxVlanRef struct {
 }
 
 type JSONInterface struct {
-	ID          uint          `json:"id,string"`
-	Name        string        `json:"name"`
-	Description string        `json:"description"`
-	Type        string        `json:"type"`
-	VRF         *NetboxVRFRef `json:"vrf"`
-	Cable       *struct {
+	ID          uint   `json:"id,string"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Type        string `json:"type"`
+	// Mode is dcim.Interface.mode ("access", "tagged", "tagged-all" or
+	// "q-in-q"), "" if the interface isn't a switchport at all.
+	Mode   string `json:"mode"`
+	Label  string `json:"label"`
+	Parent *struct {
+		ID uint `json:"id,string"`
+	} `json:"parent"`
+	VRF   *NetboxVRFRef `json:"vrf"`
+	Cable *struct {
 		ID uint `json:"id,string"`
 	} `json:"cable"`
 	UntaggedVLAN *NetboxVlanRef  `json:"untagged_vlan"`
@@ -334,6 +341,8 @@ func (nb *NetboxClient) parseDevices(devices []JSONDevice, vm bool) ([]*NBDevice
 				Name:        jintf.Name,
 				Description: jintf.Description,
 				Type:        jintf.Type,
+				Mode:        jintf.Mode,
+				Label:       jintf.Label,
 				CfRole:      jintf.CustomFields.InterfaceRole,
 				Tags:        netboxTagsToNBTags(jintf.Tags),
 				Addresses:   addresses,
@@ -343,6 +352,9 @@ func (nb *NetboxClient) parseDevices(devices []JSONDevice, vm bool) ([]*NBDevice
 			}
 			if jintf.Cable != nil {
 				iface.CableID = jintf.Cable.ID
+			}
+			if jintf.Parent != nil {
+				iface.ParentID = jintf.Parent.ID
 			}
 			switch {
 			case jintf.UntaggedVLAN != nil:
@@ -765,6 +777,85 @@ func (nb *NetboxClient) UpdateTenant(tenantID uint, changes map[string]any) erro
 	return nb.restPatch("/api/tenancy/tenants/"+strconv.FormatUint(uint64(tenantID), 10)+"/", changes)
 }
 
+// netboxTenantListREST is one page of the REST tenants list endpoint, used
+// only by GetTenant's filtered lookup - tenantListGraphQLbody has no filter
+// for custom fields, so this goes through the REST API instead, which
+// supports filtering directly on a custom field via a cf_<name> query
+// param.
+type netboxTenantListREST struct {
+	Results []struct {
+		NetboxTenantREST
+		CF TenantCustomFields `json:"custom_fields"`
+	} `json:"results"`
+}
+
+// GetTenant looks up the single tenant whose custom fields match
+// source/sourceID (see TenantCustomFields), via a server-side filtered
+// REST call instead of GetTenants' full-table fetch - the point being
+// O(1) instead of O(tenant count) for a caller (FindOrCreateTenant) that
+// only ever wants one row. Returns nil, nil (not an error) if no tenant
+// matches.
+func (nb *NetboxClient) GetTenant(source, sourceID string) (*NBTenant, error) {
+	endpoint := "/api/tenancy/tenants/?cf_source=" + url.QueryEscape(source) + "&cf_source_id=" + url.QueryEscape(sourceID)
+	var page netboxTenantListREST
+	if err := nb.restGet(endpoint, &page); err != nil {
+		return nil, err
+	}
+	if len(page.Results) == 0 {
+		return nil, nil
+	}
+	t := page.Results[0]
+	return &NBTenant{
+		NetboxID:   t.ID,
+		Name:       t.Name,
+		Slug:       t.Slug,
+		CfSource:   t.CF.Source,
+		CfSourceID: t.CF.SourceID,
+	}, nil
+}
+
+// JSONSites is a page of the top-level site_list GraphQL query (see
+// siteListGraphQLbody), reusing NetboxSite since its fields (id/name/
+// latitude/longitude) already match what device_list's nested "site"
+// selection returns.
+type JSONSites struct {
+	Data struct {
+		Sites []NetboxSite `json:"site_list"`
+	} `json:"data"`
+}
+
+// GetSites fetches every Netbox site, for callers that need the full site
+// inventory rather than just the sites referenced by a device (e.g. the
+// network map, which also plots sites with no devices of their own). Sites
+// with no coordinates, and the placeholder "Default" site, are skipped -
+// same filtering parseDevices applies to a device's own site reference.
+func (nb *NetboxClient) GetSites() ([]*NetboxSite, error) {
+	var sites JSONSites
+	err := nb.fetchAllPages(siteListGraphQLbody, "", -1, func(respdata []byte) (int, uint, error) {
+		var page JSONSites
+		if err := json.Unmarshal(respdata, &page); err != nil {
+			return 0, 0, err
+		}
+		sites.Data.Sites = append(sites.Data.Sites, page.Data.Sites...)
+		var lastID uint
+		if n := len(page.Data.Sites); n > 0 {
+			lastID = page.Data.Sites[n-1].ID
+		}
+		return len(page.Data.Sites), lastID, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]*NetboxSite, 0, len(sites.Data.Sites))
+	for _, site := range sites.Data.Sites {
+		if site.Name == "Default" || site.Latitude == nil || site.Longitude == nil {
+			continue
+		}
+		out = append(out, &site)
+	}
+	return out, nil
+}
+
 // ---------------------------------------------------------------------------
 //  Device Type
 // ---------------------------------------------------------------------------
@@ -1092,12 +1183,13 @@ type netboxCableTermination struct {
 // netboxCableREST is a dcim.Cable row as returned by the REST API.
 type netboxCableREST struct {
 	ID            uint                     `json:"id"`
+	Label         string                   `json:"label"`
 	ATerminations []netboxCableTermination `json:"a_terminations"`
 	BTerminations []netboxCableTermination `json:"b_terminations"`
 }
 
 func (c *netboxCableREST) toNBCable() *NBCable {
-	cable := &NBCable{NetboxID: c.ID}
+	cable := &NBCable{NetboxID: c.ID, Label: c.Label}
 	if len(c.ATerminations) > 0 {
 		cable.AInterface = c.ATerminations[0].ObjectID
 	}

@@ -58,6 +58,11 @@ var deviceListGraphQLbody = `
             name
             description
             type
+            mode
+            label
+            parent {
+                id
+            }
             vrf {
                 id
                 name
@@ -135,6 +140,20 @@ var tenantListGraphQLbody = `
         name
         slug
         custom_fields
+    }
+}
+`
+
+// siteListGraphQLbody fetches every dcim.Site, for callers that need the
+// full site inventory rather than just the sites referenced by a device
+// (see GetSites).
+var siteListGraphQLbody = `
+{
+    site_list{{.filter}} {
+        id
+        name
+        latitude
+        longitude
     }
 }
 `
